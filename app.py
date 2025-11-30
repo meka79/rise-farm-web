@@ -9,7 +9,7 @@ import time
 import plotly.express as px
 
 # --- AYARLAR ---
-st.set_page_config(page_title="Rise Farm (Cloud V38)", layout="wide", page_icon="☁️")
+st.set_page_config(page_title="Rise Farm (Cloud V39)", layout="wide", page_icon="☁️")
 GB_FIYATI_TL = 360.0
 
 # --- AUTH & BAĞLANTI ---
@@ -69,6 +69,7 @@ def get_data_cached(username):
         
         if df.empty: return pd.DataFrame(columns=["Sahip", "Tarih", "Kategori", "Alt_Kategori", "Eşya", "Adet", "Birim_Fiyat", "Toplam_Deger", "Toplam_TL", "Notlar"])
         
+        # Sadece giren kullanıcının verilerini getir
         if "Sahip" in df.columns:
             df = df[df["Sahip"] == username]
         else:
@@ -99,7 +100,7 @@ def save_entry_cloud(username, tarih, kategori, alt_kategori, esya, adet, fiyat,
     clear_cache()
     return True
 
-# --- SİLME VE GÜNCELLEME ---
+# --- SİLME VE GÜNCELLEME (AKTİF) ---
 def delete_row_by_ui_index(df_user, ui_index):
     sh = get_google_sheet()
     ws = sh.worksheet("Logs")
@@ -111,6 +112,7 @@ def delete_row_by_ui_index(df_user, ui_index):
     row_to_del = -1
     for i, row in enumerate(all_values):
         if i == 0: continue
+        # Eşleşme Kontrolü
         if (len(row) > 5 and 
             str(row[0]) == str(target_row['Sahip']) and 
             str(row[1]) == target_date and
@@ -126,6 +128,7 @@ def delete_row_by_ui_index(df_user, ui_index):
     return False
 
 def update_row_by_ui_index(df_user, ui_index, new_data):
+    # Önce sil, sonra yenisini ekle
     if delete_row_by_ui_index(df_user, ui_index):
         old = df_user.loc[ui_index]
         save_entry_cloud(
@@ -151,7 +154,7 @@ def clear_user_data(username):
     clear_cache()
     return True
 
-# --- FİYAT VE DÖNEM YÖNETİMİ ---
+# --- FİYAT YÖNETİMİ ---
 BASE_DB = {
     "Gathering (Toplama)": {
         "Woodcutting (Odunculuk)": {"Oak Wood": 12000, "Pine Wood": 15000, "Aspen Wood": 20000, "Birch Wood": 25000, "🌟 Holywood": 1400000, "🌟 Firefly Wood": 600000, "🌟 Soulsage": 700000},
@@ -284,11 +287,6 @@ if check_login():
     
     st.sidebar.markdown("---")
     
-    # Yenile Butonu
-    if st.sidebar.button("🔄 Verileri Yenile"):
-        clear_cache()
-        st.rerun()
-    
     sh = init_sheets()
     ITEM_DB = get_prices_cloud()
     PERIOD_DB = get_periods_cloud(CURRENT_USER)
@@ -409,8 +407,8 @@ if check_login():
                                 if nm == "Treasure Token": new_prices[nm] = pr; continue
                                 new_prices[nm] = parse_price(st.text_input(nm, value=format_price(pr), key=f"p_{nm}"))
                     if "Treasure Token" in items:
-                        st.info(f"Treasure Token: {format_price(items['Treasure Token'])}")
                         new_prices["Treasure Token"] = items["Treasure Token"]
+                        st.info(f"Treasure Token: {format_price(items['Treasure Token'])}")
                     if st.form_submit_button("Güncelle"):
                         if "Royal Chest" in new_prices:
                             new_prices["Treasure Token"] = int(new_prices["Royal Chest"] / 9)
@@ -422,10 +420,10 @@ if check_login():
         st.title("📊 Analiz")
         df = get_data_cached(CURRENT_USER)
         
-        # --- HATA DÜZELTME (ÖNCE TANIMLA) ---
-        df_filtered = pd.DataFrame() # Varsayılan boş tablo
+        # Önce Tanımla (Hata Önleyici)
+        df_filtered = pd.DataFrame()
         if not df.empty:
-            df_filtered = df.copy() # Doluysa kopyala
+            df_filtered = df.copy()
         
         if not df.empty:
             with st.expander("🔍 Filtrele", expanded=True):
@@ -438,7 +436,6 @@ if check_login():
                 if cat_fil: av_sub = df[df["Kategori"].isin(cat_fil)]["Alt_Kategori"].unique()
                 sub_fil = c3.multiselect("Bölüm", av_sub)
                 
-                # Filtreleme Mantığı
                 act_p = None
                 if d_fil == "Bugün": df_filtered = df_filtered[df_filtered["Tarih"] == pd.Timestamp.today().normalize()]
                 elif d_fil == "Son 7 Gün": df_filtered = df_filtered[df_filtered["Tarih"] >= (pd.Timestamp.today() - timedelta(days=7))]
@@ -495,18 +492,19 @@ if check_login():
                     item_s = df_filtered.groupby(["Alt_Kategori", "Eşya"]).agg({"Adet":"sum", "Toplam_Deger":"sum"}).reset_index().sort_values("Toplam_Deger", ascending=False)
                     item_s["Gelir"] = item_s["Toplam_Deger"].apply(format_price)
                     c_i.dataframe(item_s[["Alt_Kategori", "Eşya", "Adet", "Gelir"]], use_container_width=True, hide_index=True)
-                    
                     cat_s = df_filtered.groupby("Alt_Kategori")["Toplam_Deger"].sum().reset_index()
                     cat_s["%"] = (cat_s["Toplam_Deger"] / cat_s["Toplam_Deger"].sum() * 100).map('{:.1f}%'.format)
                     c_p.dataframe(cat_s[["Alt_Kategori", "%"]], use_container_width=True, hide_index=True)
             
             with t3:
-                st.dataframe(df_filtered.sort_values("Tarih", ascending=False), use_container_width=True)
+                df_show = df_filtered.sort_values("Tarih", ascending=False)
+                st.dataframe(df_show, use_container_width=True)
                 
                 col_del1, col_del2 = st.columns([3, 1])
                 with col_del1:
-                    delete_options = df_filtered.apply(lambda x: f"{x.name} | {x['Tarih'].strftime('%d.%m')} - {x['Eşya']} ({x['Adet']} ad.)", axis=1)
+                    delete_options = df_show.apply(lambda x: f"{x.name} | {x['Tarih'].strftime('%d.%m')} - {x['Eşya']} ({x['Adet']} ad.)", axis=1)
                     sel_rec = st.selectbox("İşlem Seç:", delete_options, index=None, placeholder="Kayıt seç...")
+                
                 if sel_rec:
                     idx = int(sel_rec.split(" | ")[0])
                     rec = df.loc[idx]
@@ -534,10 +532,3 @@ if check_login():
                         if clear_user_data(CURRENT_USER): st.success("Temizlendi."); st.rerun()
         else:
             st.info("Kayıt yok.")
-
-# --- ÇIKIŞ BUTONU ---
-st.sidebar.markdown("---")
-if st.sidebar.button("🔴 Uygulamayı ve Motoru Kapat"):
-    overlay_code = """<style>.overlay {position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.85); z-index: 999999; display: flex; flex-direction: column; justify-content: center; align-items: center; color: white; font-size: 30px;}</style><div class="overlay">✅ Uygulama Kapatıldı!<br>Tarayıcıyı kapatabilirsiniz.</div>"""
-    st.markdown(overlay_code, unsafe_allow_html=True)
-    import time; time.sleep(0.5); os._exit(0)
