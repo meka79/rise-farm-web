@@ -9,7 +9,7 @@ import time
 import plotly.express as px
 
 # --- AYARLAR ---
-st.set_page_config(page_title="Rise Farm (Cloud V51)", layout="wide", page_icon="💰")
+st.set_page_config(page_title="Rise Farm (Cloud V52 Lite)", layout="wide", page_icon="💰")
 GB_FIYATI_TL = 360.0
 BIR_GB_COIN = 100_000_000.0
 
@@ -21,21 +21,6 @@ def get_google_sheet():
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     client = gspread.authorize(creds)
     return client.open("rise_farm_db")
-
-# --- SHEET BAŞLATUCU ---
-def init_sheets():
-    sh = get_google_sheet()
-    try: sh.worksheet("Logs")
-    except: 
-        ws = sh.add_worksheet("Logs", 1000, 11)
-        ws.append_row(["Sahip", "Tarih", "Kategori", "Alt_Kategori", "Eşya", "Adet", "Birim_Fiyat", "Toplam_Deger", "Toplam_TL", "Notlar"])
-    try: sh.worksheet("Prices")
-    except: sh.add_worksheet("Prices", 1000, 3)
-    try: sh.worksheet("Periods")
-    except: 
-        ws = sh.add_worksheet("Periods", 100, 4)
-        ws.append_row(["Sahip", "Donem_Adi", "Baslangic", "Bitis"])
-    return sh
 
 # --- YARDIMCI FONKSİYONLAR ---
 def parse_price(value_str):
@@ -97,10 +82,8 @@ def clear_cache():
 def save_entry_cloud(username, tarih, kategori, alt_kategori, esya, adet, fiyat, notlar):
     sh = get_google_sheet()
     ws = sh.worksheet("Logs")
-    
     toplam_coin = adet * fiyat
     toplam_tl = (toplam_coin / BIR_GB_COIN) * GB_FIYATI_TL
-    
     tarih_str = tarih.strftime("%Y-%m-%d")
     row = [username, tarih_str, kategori, alt_kategori, esya, adet, fiyat, toplam_coin, toplam_tl, notlar]
     ws.append_row(row)
@@ -112,21 +95,14 @@ def delete_row_by_ui_index(df_user, ui_index):
     sh = get_google_sheet()
     ws = sh.worksheet("Logs")
     all_values = ws.get_all_values()
-    
     target_row = df_user.loc[ui_index]
     target_date = str(target_row['Tarih'].strftime('%Y-%m-%d')) if pd.notnull(target_row['Tarih']) else ""
-    
     row_to_del = -1
     for i, row in enumerate(all_values):
         if i == 0: continue
-        if (len(row) > 5 and 
-            str(row[0]) == str(target_row['Sahip']) and 
-            str(row[1]) == target_date and
-            str(row[4]) == str(target_row['Eşya']) and
-            str(row[5]) == str(int(target_row['Adet']))):
+        if (len(row) > 5 and str(row[0]) == str(target_row['Sahip']) and str(row[1]) == target_date and str(row[4]) == str(target_row['Eşya']) and str(row[5]) == str(int(target_row['Adet']))):
             row_to_del = i + 1
             break
-            
     if row_to_del != -1:
         ws.delete_rows(row_to_del)
         clear_cache()
@@ -136,16 +112,7 @@ def delete_row_by_ui_index(df_user, ui_index):
 def update_row_by_ui_index(df_user, ui_index, new_data):
     if delete_row_by_ui_index(df_user, ui_index):
         old = df_user.loc[ui_index]
-        save_entry_cloud(
-            old['Sahip'],
-            new_data['Tarih'],
-            old['Kategori'],
-            old['Alt_Kategori'],
-            old['Eşya'],
-            new_data['Adet'],
-            new_data['Birim_Fiyat'],
-            new_data['Notlar']
-        )
+        save_entry_cloud(old['Sahip'], new_data['Tarih'], old['Kategori'], old['Alt_Kategori'], old['Eşya'], new_data['Adet'], new_data['Birim_Fiyat'], new_data['Notlar'])
         return True
     return False
 
@@ -159,42 +126,62 @@ def clear_user_data(username):
     clear_cache()
     return True
 
-# --- FİYAT YÖNETİMİ ---
-BASE_DB = {
-    "Gathering (Toplama)": {
-        "Woodcutting (Odunculuk)": {"Oak Wood": 12000, "Pine Wood": 15000, "Aspen Wood": 20000, "Birch Wood": 25000, "🌟 Holywood": 1400000, "🌟 Firefly Wood": 600000, "🌟 Soulsage": 700000},
-        "Mining (Madencilik)": {"Copper Ore": 10000, "Iron Ore": 20000, "Titanium Ore": 50000, "Gold Ore": 80000, "🌟 Silver Dust": 150000, "🌟 Gold Dust": 250000},
-        "Quarrying (Taşçılık)": {"Rough Stone": 5000, "Marble": 15000, "Granite": 25000, "🌟 Sphere of Fire": 300000, "🌟 Sphere of Water": 300000, "🌟 Sphere of Air": 300000, "🌟 Poison Essence": 400000},
-        "Archaeology (Arkeoloji)": {"Crude Amber": 30000, "Crude Amethyst": 30000, "Crude Emerald": 30000, "Crude Ruby": 30000, "Crude Sapphire": 30000, "Crude Topaz": 30000, "🌟 Rare Obsidian": 1500000},
-        "Fishing (Balıkçılık)": {"Fish": 5000, "Lobster": 25000, "🌟 Pearl": 500000, "🌟 Golden Fish": 2000000},
-        "Harvesting (Çiftçilik)": {"Carrot": 1000, "Corn": 1500, "Cotton Fiber": 8000, "Potato": 2000, "Tomato": 2500, "Asparagus": 3000, "Mushroom": 3500, "Garlic": 4000, "Onion": 2500, "Grape": 3000, "Lemon": 3500, "Pepper": 4000, "Zucchini": 2500},
-        "Skinning (Dericilik)": {"Meat": 500, "Stag Hide": 2000, "Boar Hide": 4000, "Tiger Hide": 8000, "Bear Hide": 12000, "Zebra Hide": 3000, "Wolf Hide": 5000, "Leopard Hide": 10000, "Elephant Hide": 15000},
-        "Herbalism (Bitkicilik)": {"Cranberry": 3000, "Sage": 5000, "Valerian": 7000, "Vervain": 9000}
-    },
-    "Etkinlikler": {
-        "Crystals (Kristaller)": {"Green Crystal": 100000, "Yellow Crystal": 200000, "Red Crystal": 300000, "Onyx Crystal": 500000},
-        "Chests (Kutular)": {"Treasure Token": 500000, "Gold Chest": 3000000, "Royal Chest": 5000000, "Golden Jade": 10000000, "Celestial Chest": 15000000}
-    },
-    "Droplar (Mob & Boss)": {
-        "Genel Liste": {"Skill Book": 1000000, "Epic Upgrade Scroll": 3000000, "Unique Upgrade Scroll": 15000000, "Relic Upgrade Scroll": 5000000, "Epic Weapon Shard": 500000}
-    },
-    "Craft (Üretim)": {"Manuel Giriş": {}},
-    "Upgrade (Basma)": {"Genel": {"Basılmış (+7) İtem": 50000000, "Basılmış (+8) İtem": 500000000, "Yanan İtem (Gider)": 0}}
-}
-
+# --- FİYAT VE DÖNEM YÖNETİMİ (Sheet'ten Oku) ---
 @st.cache_data(ttl=300)
 def get_prices_cloud():
-    active_db = BASE_DB.copy()
+    # Boş bir sözlükle başla, Sheet'ten doldur
+    active_db = {
+        "Gathering (Toplama)": {"Woodcutting (Odunculuk)": {}, "Mining (Madencilik)": {}, "Quarrying (Taşçılık)": {}, "Archaeology (Arkeoloji)": {}, "Fishing (Balıkçılık)": {}, "Harvesting (Çiftçilik)": {}, "Skinning (Dericilik)": {}, "Herbalism (Bitkicilik)": {}},
+        "Etkinlikler": {"Crystals (Kristaller)": {}, "Chests (Kutular)": {}},
+        "Droplar (Mob & Boss)": {"Genel Liste": {}},
+        "Craft (Üretim)": {"Manuel Giriş": {}},
+        "Upgrade (Basma)": {"Genel": {}}
+    }
     try:
         sh = get_google_sheet()
         ws = sh.worksheet("Prices")
         records = ws.get_all_records()
         price_map = {str(r['Item']): int(r['Price']) for r in records}
-        for cat in active_db:
-            for sub in active_db[cat]:
-                for item in active_db[cat][sub]:
-                    if item in price_map:
-                        active_db[cat][sub][item] = price_map[item]
+        
+        # Burada Sheet'teki itemleri yapımıza eşleştiriyoruz
+        # Not: Sheet'te sadece Item-Price var, Kategori bilgisi yok.
+        # Bu yüzden item isimleri benzersiz olmalı. (Örn: Oak Wood her yerde Oak Wood'dur)
+        # Basit bir eşleştirme için elimizdeki iskeleti (active_db) kullanacağız.
+        # Ancak iskelet BOŞ olduğu için, Sheet'ten gelenleri nereye koyacağımızı bilemeyiz.
+        # O yüzden V52'de HAFİFLETİLMİŞ BİR İSKELET tutmak zorundayız.
+        # Aşağıdaki iskelet sadece item isimlerini tutar, fiyatları Sheet'ten çeker.
+        
+        # Eğer iskeleti de silersek, "Toplu Giriş" ekranında hangi itemlerin çıkacağını bilemeyiz.
+        # Bu yüzden iskeleti geri getiriyorum ama fiyatlarını 0 yapıyorum, Sheet'ten güncelleyecek.
+        
+        skeleton_db = {
+            "Gathering (Toplama)": {
+                "Woodcutting (Odunculuk)": ["Oak Wood", "Pine Wood", "Aspen Wood", "Birch Wood", "🌟 Holywood", "🌟 Firefly Wood", "🌟 Soulsage"],
+                "Mining (Madencilik)": ["Copper Ore", "Iron Ore", "Titanium Ore", "Gold Ore", "🌟 Silver Dust", "🌟 Gold Dust"],
+                "Quarrying (Taşçılık)": ["Rough Stone", "Marble", "Granite", "🌟 Sphere of Fire", "🌟 Sphere of Water", "🌟 Sphere of Air", "🌟 Poison Essence"],
+                "Archaeology (Arkeoloji)": ["Crude Amber", "Crude Amethyst", "Crude Emerald", "Crude Ruby", "Crude Sapphire", "Crude Topaz", "🌟 Rare Obsidian"],
+                "Fishing (Balıkçılık)": ["Fish", "Lobster", "🌟 Pearl", "🌟 Golden Fish"],
+                "Harvesting (Çiftçilik)": ["Carrot", "Corn", "Cotton Fiber", "Potato", "Tomato", "Asparagus", "Mushroom", "Garlic", "Onion", "Grape", "Lemon", "Pepper", "Zucchini"],
+                "Skinning (Dericilik)": ["Meat", "Stag Hide", "Boar Hide", "Tiger Hide", "Bear Hide", "Zebra Hide", "Wolf Hide", "Leopard Hide", "Elephant Hide"],
+                "Herbalism (Bitkicilik)": ["Cranberry", "Sage", "Valerian", "Vervain"]
+            },
+            "Etkinlikler": {
+                "Crystals (Kristaller)": ["Green Crystal", "Yellow Crystal", "Red Crystal", "Onyx Crystal"],
+                "Chests (Kutular)": ["Treasure Token", "Gold Chest", "Royal Chest", "Golden Jade", "Celestial Chest"]
+            },
+            "Droplar (Mob & Boss)": {
+                "Genel Liste": ["Skill Book", "Epic Upgrade Scroll", "Unique Upgrade Scroll", "Relic Upgrade Scroll", "Epic Weapon Shard"]
+            },
+            "Craft (Üretim)": {"Manuel Giriş": []},
+            "Upgrade (Basma)": {"Genel": ["Basılmış (+7) İtem", "Basılmış (+8) İtem", "Yanan İtem (Gider)"]}
+        }
+
+        for cat, subs in skeleton_db.items():
+            for sub, items in subs.items():
+                active_db[cat][sub] = {}
+                for item in items:
+                    active_db[cat][sub][item] = price_map.get(item, 0)
+        
         return active_db
     except: return active_db
 
@@ -211,21 +198,6 @@ def save_prices_cloud(current_db):
     ws.append_rows(rows)
     clear_cache()
     return True
-
-def upload_json_prices(json_file):
-    try:
-        data = json.load(json_file)
-        current_db = BASE_DB.copy()
-        for cat in data:
-            if cat in current_db:
-                for sub in data[cat]:
-                    if sub in current_db[cat]:
-                        for item, price in data[cat][sub].items():
-                            if item in current_db[cat][sub]:
-                                current_db[cat][sub][item] = price
-        save_prices_cloud(current_db)
-        return True
-    except: return False
 
 @st.cache_data(ttl=60)
 def get_periods_cloud(username):
@@ -297,8 +269,8 @@ if check_login():
         clear_cache()
         st.rerun()
     
-    sh = init_sheets()
-    ITEM_DB = get_prices_cloud()
+    sh = init_sheets() # Sheet kontrolü (Sekme yoksa oluştur)
+    ITEM_DB = get_prices_cloud() # Fiyatları Sheet'ten çek
     PERIOD_DB = get_periods_cloud(CURRENT_USER)
     
     st.sidebar.title("Menü")
@@ -351,28 +323,14 @@ if check_login():
                     for j, (name, price) in enumerate(chunk):
                         with cols[j]:
                             inputs[name] = st.number_input(f"{name}", min_value=0, step=1, help=f"Piyasa: {format_price(price)}", key=f"q_{name}")
-                            # Anlık hesap (Görsel İçin)
-                            if inputs[name] > 0:
-                                pass # Form içinde dinamik gösterim kısıtlı
-
-                st.markdown("---")
-                if st.form_submit_button("💾 Kaydet (Toplu)"):
+                if st.form_submit_button("💾 Kaydet"):
                     count = 0
-                    batch_total_coin = 0
-                    batch_total_tl = 0
                     for nm, qty in inputs.items():
                         if qty > 0:
                             prc = ITEM_DB[sec_cat][sec_sub][nm]
-                            this_total = qty * prc
-                            this_tl = (this_total / BIR_GB_COIN) * GB_FIYATI_TL
-                            batch_total_coin += this_total
-                            batch_total_tl += this_tl
-                            
                             save_entry_cloud(CURRENT_USER, tarih, sec_cat, sec_sub, nm, qty, prc, notlar)
                             count += 1
-                    if count > 0: 
-                        st.success(f"✅ {count} kalem eklendi!\n\n💰 **Toplam:** {format_price(batch_total_coin)} Coin | 🇹🇷 **{batch_total_tl:.2f} TL**")
-                        st.toast("Kaydedildi!", icon="🎉")
+                    if count > 0: st.success(f"{count} kalem eklendi!"); st.toast("Kaydedildi!")
                     else: st.warning("Adet giriniz.")
 
         with tab_manuel:
@@ -393,28 +351,16 @@ if check_login():
                 mq = c2.number_input("Adet", min_value=1, value=1, key="mq")
                 mp = c3.text_input("Fiyat", value=format_price(def_price), key="mp")
                 mn = st.text_area("Not", key="mn")
-                if st.form_submit_button("💾 Kaydet (Manuel)"):
+                if st.form_submit_button("💾 Kaydet"):
                     real_p = parse_price(mp)
                     if fin_name:
-                        # Anlık Hesap
-                        man_total = mq * real_p
-                        man_tl = (man_total / BIR_GB_COIN) * GB_FIYATI_TL
-                        
                         save_entry_cloud(CURRENT_USER, mt, m_cat, m_sub, fin_name, mq, real_p, mn)
-                        st.success(f"✅ Kaydedildi!\n\n💰 **Değer:** {format_price(man_total)} Coin | 🇹🇷 **{man_tl:.2f} TL**")
+                        st.success("Kaydedildi")
                     else: st.error("İsim girin")
 
     # --- SAYFA: PİYASA AYARLARI ---
     elif sayfa == "⚙️ Piyasa Ayarları":
-        st.title("⚙️ Piyasa Ayarları")
-        with st.expander("📤 Eski Fiyat Dosyasını Yükle (market_prices.json)", expanded=False):
-            uploaded_file = st.file_uploader("Dosya Seç", type="json")
-            if uploaded_file:
-                if st.button("Fiyatları İçe Aktar"):
-                    if upload_json_prices(uploaded_file):
-                        st.success("Fiyatlar yüklendi!"); st.rerun()
-                    else: st.error("Hata oluştu.")
-        st.markdown("---")
+        st.title("⚙️ Piyasa Fiyatlarını Düzenle")
         with st.container(border=True):
             e_cat = st.selectbox("Kategori", list(ITEM_DB.keys()))
             if e_cat == "Craft (Üretim)": st.warning("Manuel kategori.")
@@ -480,12 +426,9 @@ if check_login():
                 st.info(f"👑 **{act_p}** | Kalan: {max(0, rem)} gün")
             
             tot_c = df_filtered["Toplam_Deger"].sum()
-            # DÜZELTME: TL'yi sütundan alma, yeniden hesapla
-            tot_tl = (tot_c / BIR_GB_COIN) * GB_FIYATI_TL
-            
+            tot_tl = df_filtered["Toplam_TL"].sum()
             c1, c2 = st.columns(2)
             c1.metric("💰 Kazanç", format_m(tot_c))
-            # DÜZELTME: Ondalık gösterim (.2f)
             c2.metric("🇹🇷 Değer", f"{tot_tl:,.2f} TL")
             
             st.markdown("---")
@@ -493,10 +436,9 @@ if check_login():
             
             with t1:
                 col_ozet, col_detay = st.columns([1, 1.5])
-                ds = df_filtered.groupby(df_filtered["Tarih"].dt.date)[["Toplam_Deger"]].sum().reset_index().sort_values("Tarih", ascending=False)
+                ds = df_filtered.groupby(df_filtered["Tarih"].dt.date)[["Toplam_Deger", "Toplam_TL"]].sum().reset_index().sort_values("Tarih", ascending=False)
                 ds["Coin"] = ds["Toplam_Deger"].apply(lambda x: f"{x/1000000:.2f}m")
-                # DÜZELTME: TL'yi yeniden hesapla
-                ds["TL"] = ds["Toplam_Deger"].apply(lambda x: f"{(x/BIR_GB_COIN)*GB_FIYATI_TL:.2f} TL")
+                ds["TL"] = ds["Toplam_TL"].apply(lambda x: f"{x:.0f} TL")
                 col_ozet.dataframe(ds[["Tarih", "Coin", "TL"]], use_container_width=True, hide_index=True)
                 
                 if not ds.empty:
