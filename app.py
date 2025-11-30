@@ -9,7 +9,7 @@ import time
 import plotly.express as px
 
 # --- AYARLAR ---
-st.set_page_config(page_title="Rise Farm (Cloud V37)", layout="wide", page_icon="☁️")
+st.set_page_config(page_title="Rise Farm (Cloud V38)", layout="wide", page_icon="☁️")
 GB_FIYATI_TL = 360.0
 
 # --- AUTH & BAĞLANTI ---
@@ -24,17 +24,14 @@ def get_google_sheet():
 # --- SHEET BAŞLATUCU ---
 def init_sheets():
     sh = get_google_sheet()
-    # Logs
     try: sh.worksheet("Logs")
     except: 
         ws = sh.add_worksheet("Logs", 1000, 11)
         ws.append_row(["Sahip", "Tarih", "Kategori", "Alt_Kategori", "Eşya", "Adet", "Birim_Fiyat", "Toplam_Deger", "Toplam_TL", "Notlar"])
     
-    # Prices
     try: sh.worksheet("Prices")
     except: sh.add_worksheet("Prices", 1000, 3)
     
-    # Periods
     try: sh.worksheet("Periods")
     except: 
         ws = sh.add_worksheet("Periods", 100, 4)
@@ -62,7 +59,7 @@ def format_m(deger):
     return f"{deger/1_000_000:.2f} m"
 
 # --- DATA YÖNETİMİ (CACHE KONTROLLÜ) ---
-@st.cache_data(ttl=10) # 10 saniyede bir yenile (Hızlı tepki için düşürdüm)
+@st.cache_data(ttl=10)
 def get_data_cached(username):
     try:
         sh = get_google_sheet()
@@ -72,19 +69,16 @@ def get_data_cached(username):
         
         if df.empty: return pd.DataFrame(columns=["Sahip", "Tarih", "Kategori", "Alt_Kategori", "Eşya", "Adet", "Birim_Fiyat", "Toplam_Deger", "Toplam_TL", "Notlar"])
         
-        # Kullanıcı Filtresi
         if "Sahip" in df.columns:
             df = df[df["Sahip"] == username]
         else:
-            return pd.DataFrame() # Sütun yoksa boş dön
+            return pd.DataFrame()
             
-        # Sayısal Düzeltme
         cols = ["Adet", "Birim_Fiyat", "Toplam_Deger", "Toplam_TL"]
         for c in cols:
             if c in df.columns:
                 df[c] = pd.to_numeric(df[c].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
         
-        # Tarih Düzeltme
         if "Tarih" in df.columns:
             df["Tarih"] = pd.to_datetime(df["Tarih"], errors='coerce')
             
@@ -97,16 +91,12 @@ def clear_cache():
 def save_entry_cloud(username, tarih, kategori, alt_kategori, esya, adet, fiyat, notlar):
     sh = get_google_sheet()
     ws = sh.worksheet("Logs")
-    
     toplam_coin = adet * fiyat
     toplam_tl = (toplam_coin / 100_000_000.0) * GB_FIYATI_TL
-    
-    # Tarihi string olarak kaydet ki Google Sheets formatı bozulmasın
     tarih_str = tarih.strftime("%Y-%m-%d")
-    
     row = [username, tarih_str, kategori, alt_kategori, esya, adet, fiyat, toplam_coin, toplam_tl, notlar]
     ws.append_row(row)
-    clear_cache() # ÖNEMLİ: Kayıttan sonra hafızayı sil
+    clear_cache()
     return True
 
 # --- SİLME VE GÜNCELLEME ---
@@ -116,24 +106,17 @@ def delete_row_by_ui_index(df_user, ui_index):
     all_values = ws.get_all_values()
     
     target_row = df_user.loc[ui_index]
-    # Tarih formatı sheet'te YYYY-MM-DD stringi olabilir
     target_date = str(target_row['Tarih'].strftime('%Y-%m-%d')) if pd.notnull(target_row['Tarih']) else ""
     
     row_to_del = -1
-    
-    # Satır 1 Header olduğu için veri 1. indexten başlar ama Sheet satırı 2'den başlar.
-    # all_values[i] -> Sheet Row (i+1)
     for i, row in enumerate(all_values):
-        if i == 0: continue # Header
-        
-        # Eşleşme Kontrolü (Sahip, Tarih, Eşya, Adet)
+        if i == 0: continue
         if (len(row) > 5 and 
             str(row[0]) == str(target_row['Sahip']) and 
             str(row[1]) == target_date and
             str(row[4]) == str(target_row['Eşya']) and
             str(row[5]) == str(target_row['Adet'])):
-            
-            row_to_del = i + 1 # gspread 1-based index
+            row_to_del = i + 1
             break
             
     if row_to_del != -1:
@@ -162,16 +145,13 @@ def clear_user_data(username):
     sh = get_google_sheet()
     ws = sh.worksheet("Logs")
     all_values = ws.get_all_values()
-    
-    # Header'ı ve diğer kullanıcıları sakla
     keep = [all_values[0]] + [row for row in all_values[1:] if str(row[0]) != username]
-    
     ws.clear()
     ws.append_rows(keep)
     clear_cache()
     return True
 
-# --- FİYAT YÖNETİMİ ---
+# --- FİYAT VE DÖNEM YÖNETİMİ ---
 BASE_DB = {
     "Gathering (Toplama)": {
         "Woodcutting (Odunculuk)": {"Oak Wood": 12000, "Pine Wood": 15000, "Aspen Wood": 20000, "Birch Wood": 25000, "🌟 Holywood": 1400000, "🌟 Firefly Wood": 600000, "🌟 Soulsage": 700000},
@@ -239,7 +219,6 @@ def upload_json_prices(json_file):
         return True
     except: return False
 
-# --- DÖNEMLER ---
 @st.cache_data(ttl=60)
 def get_periods_cloud(username):
     try:
@@ -305,7 +284,7 @@ if check_login():
     
     st.sidebar.markdown("---")
     
-    # Yenile Butonu (Hata durumunda manuel temizlik için)
+    # Yenile Butonu
     if st.sidebar.button("🔄 Verileri Yenile"):
         clear_cache()
         st.rerun()
@@ -334,7 +313,7 @@ if check_login():
 
     st.sidebar.info(f"1 GB = **{GB_FIYATI_TL} TL**")
 
-    # --- SAYFALAR ---
+    # --- SAYFA: YENİ KAYIT ---
     if sayfa == "📝 Yeni Kayıt Ekle":
         st.title("📝 Yeni Kayıt (Cloud)")
         tab_toplu, tab_manuel = st.tabs(["📦 Toplu Giriş", "✍️ Manuel Giriş"])
@@ -349,10 +328,12 @@ if check_login():
                 alt_kats = [x for x in desired if x in alt_kats] + [x for x in alt_kats if x not in desired]
             sec_sub = alt_kats[0]
             if len(alt_kats) > 1: sec_sub = c2.selectbox("Bölüm", alt_kats, key="bs")
+            
             st.markdown("---")
             d1, d2 = st.columns([1,3])
             tarih = d1.date_input("Tarih", datetime.date.today(), key="bd")
             notlar = d2.text_input("Not", key="bn")
+            
             st.subheader(f"📦 {sec_sub}")
             with st.form("batch"):
                 items = ITEM_DB[sec_cat][sec_sub]
@@ -399,6 +380,7 @@ if check_login():
                         st.success("Kaydedildi")
                     else: st.error("İsim girin")
 
+    # --- SAYFA: PİYASA AYARLARI ---
     elif sayfa == "⚙️ Piyasa Ayarları":
         st.title("⚙️ Piyasa Ayarları")
         with st.expander("📤 Eski Fiyat Dosyasını Yükle (market_prices.json)", expanded=False):
@@ -408,6 +390,7 @@ if check_login():
                     if upload_json_prices(uploaded_file):
                         st.success("Fiyatlar yüklendi!"); st.rerun()
                     else: st.error("Hata oluştu.")
+        
         st.markdown("---")
         with st.container(border=True):
             e_cat = st.selectbox("Kategori", list(ITEM_DB.keys()))
@@ -426,17 +409,23 @@ if check_login():
                                 if nm == "Treasure Token": new_prices[nm] = pr; continue
                                 new_prices[nm] = parse_price(st.text_input(nm, value=format_price(pr), key=f"p_{nm}"))
                     if "Treasure Token" in items:
-                        new_prices["Treasure Token"] = items["Treasure Token"]
                         st.info(f"Treasure Token: {format_price(items['Treasure Token'])}")
+                        new_prices["Treasure Token"] = items["Treasure Token"]
                     if st.form_submit_button("Güncelle"):
                         if "Royal Chest" in new_prices:
                             new_prices["Treasure Token"] = int(new_prices["Royal Chest"] / 9)
                         ITEM_DB[e_cat][e_sub] = new_prices
                         if save_prices_cloud(ITEM_DB): st.success("Fiyatlar güncellendi!")
 
+    # --- SAYFA: ANALİZ ---
     elif sayfa == "📊 Analiz & Defter":
         st.title("📊 Analiz")
         df = get_data_cached(CURRENT_USER)
+        
+        # --- HATA DÜZELTME (ÖNCE TANIMLA) ---
+        df_filtered = pd.DataFrame() # Varsayılan boş tablo
+        if not df.empty:
+            df_filtered = df.copy() # Doluysa kopyala
         
         if not df.empty:
             with st.expander("🔍 Filtrele", expanded=True):
@@ -449,29 +438,30 @@ if check_login():
                 if cat_fil: av_sub = df[df["Kategori"].isin(cat_fil)]["Alt_Kategori"].unique()
                 sub_fil = c3.multiselect("Bölüm", av_sub)
                 
-                df_f = df.copy()
+                # Filtreleme Mantığı
                 act_p = None
-                if d_fil == "Bugün": df_f = df_f[df_f["Tarih"] == pd.Timestamp.today().normalize()]
-                elif d_fil == "Son 7 Gün": df_f = df_f[df_f["Tarih"] >= (pd.Timestamp.today() - timedelta(days=7))]
+                if d_fil == "Bugün": df_filtered = df_filtered[df_filtered["Tarih"] == pd.Timestamp.today().normalize()]
+                elif d_fil == "Son 7 Gün": df_filtered = df_filtered[df_filtered["Tarih"] >= (pd.Timestamp.today() - timedelta(days=7))]
                 elif d_fil == "Bu Ay": 
                     t = pd.Timestamp.today()
-                    df_f = df_f[(df_f["Tarih"].dt.month == t.month) & (df_f["Tarih"].dt.year == t.year)]
+                    df_filtered = df_filtered[(df_filtered["Tarih"].dt.month == t.month) & (df_filtered["Tarih"].dt.year == t.year)]
                 elif d_fil.startswith("👑"):
                     pn = d_fil.replace("👑 ", "")
                     if pn in PERIOD_DB:
                         act_p = pn
                         s = pd.to_datetime(PERIOD_DB[pn]["start"])
                         e = pd.to_datetime(PERIOD_DB[pn]["end"])
-                        df_f = df_f[(df_f["Tarih"] >= s) & (df_f["Tarih"] <= e)]
-                if cat_fil: df_f = df_f[df_f["Kategori"].isin(cat_fil)]
-                if sub_fil: df_f = df_f[df_f["Alt_Kategori"].isin(sub_fil)]
+                        df_filtered = df_filtered[(df_filtered["Tarih"] >= s) & (df_filtered["Tarih"] <= e)]
+                
+                if cat_fil: df_filtered = df_filtered[df_filtered["Kategori"].isin(cat_fil)]
+                if sub_fil: df_filtered = df_filtered[df_filtered["Alt_Kategori"].isin(sub_fil)]
             
             if act_p:
                 rem = (pd.to_datetime(PERIOD_DB[act_p]["end"]).date() - datetime.date.today()).days
                 st.info(f"👑 **{act_p}** | Kalan: {max(0, rem)} gün")
             
-            tot_c = df_f["Toplam_Deger"].sum()
-            tot_tl = df_f["Toplam_TL"].sum()
+            tot_c = df_filtered["Toplam_Deger"].sum()
+            tot_tl = df_filtered["Toplam_TL"].sum()
             c1, c2 = st.columns(2)
             c1.metric("💰 Kazanç", format_m(tot_c))
             c2.metric("🇹🇷 Değer", f"{tot_tl:,.0f} TL")
@@ -481,10 +471,11 @@ if check_login():
             
             with t1:
                 col_ozet, col_detay = st.columns([1, 1.5])
-                ds = df_f.groupby(df_f["Tarih"].dt.date)[["Toplam_Deger", "Toplam_TL"]].sum().reset_index().sort_values("Tarih", ascending=False)
+                ds = df_filtered.groupby(df_filtered["Tarih"].dt.date)[["Toplam_Deger", "Toplam_TL"]].sum().reset_index().sort_values("Tarih", ascending=False)
                 ds["Coin"] = ds["Toplam_Deger"].apply(lambda x: f"{x/1000000:.2f}m")
                 ds["TL"] = ds["Toplam_TL"].apply(lambda x: f"{x:.0f} TL")
                 col_ozet.dataframe(ds[["Tarih", "Coin", "TL"]], use_container_width=True, hide_index=True)
+                
                 if not ds.empty:
                     sel_d = col_detay.selectbox("Detay Tarihi:", ds["Tarih"], format_func=lambda x: x.strftime("%d.%m"))
                     dd = df[df["Tarih"].dt.date == sel_d]
@@ -500,29 +491,29 @@ if check_login():
 
             with t2:
                 c_i, c_p = st.columns([1.5, 1])
-                if not df_f.empty:
-                    item_s = df_f.groupby(["Alt_Kategori", "Eşya"]).agg({"Adet":"sum", "Toplam_Deger":"sum"}).reset_index().sort_values("Toplam_Deger", ascending=False)
+                if not df_filtered.empty:
+                    item_s = df_filtered.groupby(["Alt_Kategori", "Eşya"]).agg({"Adet":"sum", "Toplam_Deger":"sum"}).reset_index().sort_values("Toplam_Deger", ascending=False)
                     item_s["Gelir"] = item_s["Toplam_Deger"].apply(format_price)
                     c_i.dataframe(item_s[["Alt_Kategori", "Eşya", "Adet", "Gelir"]], use_container_width=True, hide_index=True)
-                    cat_s = df_f.groupby("Alt_Kategori")["Toplam_Deger"].sum().reset_index()
+                    
+                    cat_s = df_filtered.groupby("Alt_Kategori")["Toplam_Deger"].sum().reset_index()
                     cat_s["%"] = (cat_s["Toplam_Deger"] / cat_s["Toplam_Deger"].sum() * 100).map('{:.1f}%'.format)
                     c_p.dataframe(cat_s[["Alt_Kategori", "%"]], use_container_width=True, hide_index=True)
             
             with t3:
-                df_show = df_filtered.sort_values("Tarih", ascending=False)
-                st.dataframe(df_show, use_container_width=True)
+                st.dataframe(df_filtered.sort_values("Tarih", ascending=False), use_container_width=True)
                 
                 col_del1, col_del2 = st.columns([3, 1])
                 with col_del1:
-                    delete_options = df_show.apply(lambda x: f"{x.name} | {x['Tarih'].strftime('%d.%m')} - {x['Eşya']} ({x['Adet']} ad.)", axis=1)
+                    delete_options = df_filtered.apply(lambda x: f"{x.name} | {x['Tarih'].strftime('%d.%m')} - {x['Eşya']} ({x['Adet']} ad.)", axis=1)
                     sel_rec = st.selectbox("İşlem Seç:", delete_options, index=None, placeholder="Kayıt seç...")
                 if sel_rec:
                     idx = int(sel_rec.split(" | ")[0])
                     rec = df.loc[idx]
                     b1, b2 = st.columns(2)
                     if b1.button("🗑️ Sil", type="primary"):
-                        if delete_row_by_ui_index(df_f, idx): st.success("Silindi!"); st.rerun()
-                        else: st.error("Silinemedi.")
+                        if delete_row_by_ui_index(df_filtered, idx): st.success("Silindi!"); st.rerun()
+                        else: st.error("Hata.")
                     if b2.button("✏️ Düzenle"):
                         st.session_state['edit_mode'] = True; st.session_state['edit_idx'] = idx
                     if st.session_state.get('edit_mode') and st.session_state.get('edit_idx') == idx:
@@ -533,14 +524,20 @@ if check_login():
                             e_not = st.text_area("Not", value=str(rec["Notlar"]))
                             if st.form_submit_button("💾 Güncelle"):
                                 new_d = {'Tarih': e_tarih, 'Adet': e_adet, 'Birim_Fiyat': e_fiyat, 'Notlar': e_not}
-                                if update_row_by_ui_index(df_f, idx, new_d):
+                                if update_row_by_ui_index(df_filtered, idx, new_d):
                                     del st.session_state['edit_mode']; del st.session_state['edit_idx']
                                     st.success("Güncellendi!"); st.rerun()
                                 else: st.error("Hata.")
                 
                 with st.expander("🗑️ Veri Tabanı Temizliği"):
-                    st.warning("DİKKAT: Tüm verileriniz silinir.")
                     if st.button("TÜM KAYITLARIMI SİL"):
                         if clear_user_data(CURRENT_USER): st.success("Temizlendi."); st.rerun()
         else:
             st.info("Kayıt yok.")
+
+# --- ÇIKIŞ BUTONU ---
+st.sidebar.markdown("---")
+if st.sidebar.button("🔴 Uygulamayı ve Motoru Kapat"):
+    overlay_code = """<style>.overlay {position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.85); z-index: 999999; display: flex; flex-direction: column; justify-content: center; align-items: center; color: white; font-size: 30px;}</style><div class="overlay">✅ Uygulama Kapatıldı!<br>Tarayıcıyı kapatabilirsiniz.</div>"""
+    st.markdown(overlay_code, unsafe_allow_html=True)
+    import time; time.sleep(0.5); os._exit(0)
