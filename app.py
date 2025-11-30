@@ -1,0 +1,425 @@
+import streamlit as st
+import pandas as pd
+import datetime
+from datetime import timedelta
+import plotly.express as px
+import gspread
+from google.oauth2.service_account import Credentials
+import json
+import streamlit.components.v1 as components
+
+# --- AYARLAR ---
+st.set_page_config(page_title="Rise Farm (Cloud)", layout="wide", page_icon="☁️")
+GB_FIYATI_TL = 360.0
+
+# --- AUTH & BAĞLANTI ---
+@st.cache_resource
+def get_google_sheet():
+    scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+    # Secrets'tan JSON içeriğini alıp dictionary'e çeviriyoruz
+    creds_dict = json.loads(st.secrets["gcp_service_account"]["json_content"])
+    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    client = gspread.authorize(creds)
+    return client.open("rise_farm_db")
+
+# --- SHEET BAŞLATUCU ---
+def init_sheets():
+    sh = get_google_sheet()
+    # Gerekli sekmeler var mı kontrol et, yoksa oluştur
+    try: sh.worksheet("Logs")
+    except: 
+        ws = sh.add_worksheet("Logs", 1000, 10)
+        ws.append_row(["Tarih", "Kategori", "Alt_Kategori", "Eşya", "Adet", "Birim_Fiyat", "Toplam_Deger", "Toplam_TL", "Notlar"])
+        
+    try: sh.worksheet("Prices")
+    except: sh.add_worksheet("Prices", 1000, 3) # Item, Fiyat
+        
+    try: sh.worksheet("Periods")
+    except: 
+        ws = sh.add_worksheet("Periods", 100, 3)
+        ws.append_row(["Donem_Adi", "Baslangic", "Bitis"])
+    return sh
+
+# --- YARDIMCI FONKSİYONLAR ---
+def parse_price(value_str):
+    if isinstance(value_str, (int, float)): return int(value_str)
+    s = str(value_str).lower().strip().replace(',', '.')
+    multiplier = 1
+    if s.endswith('k'): multiplier = 1_000; s = s[:-1]
+    elif s.endswith('m'): multiplier = 1_000_000; s = s[:-1]
+    try: return int(float(s) * multiplier)
+    except: return 0
+
+def format_price(value):
+    try: val = float(value)
+    except: return str(value)
+    if val >= 1_000_000: return f"{val/1_000_000:g}m"
+    elif val >= 1_000: return f"{val/1_000:g}k"
+    return str(int(val))
+
+# --- DATA YÖNETİMİ (KAYITLAR) ---
+def get_data():
+    sh = get_google_sheet()
+    ws = sh.worksheet("Logs")
+    data = ws.get_all_records()
+    df = pd.DataFrame(data)
+    if df.empty: return pd.DataFrame(columns=["Tarih", "Kategori", "Alt_Kategori", "Eşya", "Adet", "Birim_Fiyat", "Toplam_Deger", "Toplam_TL", "Notlar"])
+    
+    # Sayısal düzeltme
+    cols = ["Adet", "Birim_Fiyat", "Toplam_Deger", "Toplam_TL"]
+    for c in cols:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
+    
+    # Tarih düzeltme
+    if "Tarih" in df.columns:
+        df["Tarih"] = pd.to_datetime(df["Tarih"])
+        
+    return df
+
+def save_entry_cloud(tarih, kategori, alt_kategori, esya, adet, fiyat, notlar):
+    sh = get_google_sheet()
+    ws = sh.worksheet("Logs")
+    
+    toplam_coin = adet * fiyat
+    toplam_tl = (toplam_coin / 100_000_000) * GB_FIYATI_TL
+    
+    # Google Sheets'e string tarih gönderiyoruz
+    row = [str(tarih), kategori, alt_kategori, esya, adet, fiyat, toplam_coin, toplam_tl, notlar]
+    ws.append_row(row)
+    return True
+
+# --- DATA YÖNETİMİ (FİYATLAR) ---
+# Fiyatları "Prices" sekmesinde tutacağız: Kolonlar: [Item, Price]
+# Varsayılan DB yapısı kodda duracak, Sheet'ten gelenler üzerine yazılacak.
+
+BASE_DB = {
+    "Gathering (Toplama)": {
+        "Woodcutting (Odunculuk)": {"Oak Wood": 12000, "Pine Wood": 15000, "Aspen Wood": 20000, "Birch Wood": 25000, "🌟 Holywood": 1400000, "🌟 Firefly Wood": 600000, "🌟 Soulsage": 700000},
+        "Mining (Madencilik)": {"Copper Ore": 10000, "Iron Ore": 20000, "Titanium Ore": 50000, "Gold Ore": 80000, "🌟 Silver Dust": 150000, "🌟 Gold Dust": 250000},
+        "Quarrying (Taşçılık)": {"Rough Stone": 5000, "Marble": 15000, "Granite": 25000, "🌟 Sphere of Fire": 300000, "🌟 Sphere of Water": 300000, "🌟 Sphere of Air": 300000, "🌟 Poison Essence": 400000},
+        "Archaeology (Arkeoloji)": {"Crude Amber": 30000, "Crude Amethyst": 30000, "Crude Emerald": 30000, "Crude Ruby": 30000, "Crude Sapphire": 30000, "Crude Topaz": 30000, "🌟 Rare Obsidian": 1500000},
+        "Fishing (Balıkçılık)": {"Fish": 5000, "Lobster": 25000, "🌟 Pearl": 500000, "🌟 Golden Fish": 2000000},
+        "Harvesting (Çiftçilik)": {"Carrot": 1000, "Corn": 1500, "Cotton Fiber": 8000, "Potato": 2000, "Tomato": 2500, "Asparagus": 3000, "Mushroom": 3500, "Garlic": 4000, "Onion": 2500, "Grape": 3000, "Lemon": 3500, "Pepper": 4000, "Zucchini": 2500},
+        "Skinning (Dericilik)": {"Meat": 500, "Stag Hide": 2000, "Boar Hide": 4000, "Tiger Hide": 8000, "Bear Hide": 12000, "Zebra Hide": 3000, "Wolf Hide": 5000, "Leopard Hide": 10000, "Elephant Hide": 15000},
+        "Herbalism (Bitkicilik)": {"Cranberry": 3000, "Sage": 5000, "Valerian": 7000, "Vervain": 9000}
+    },
+    "Etkinlikler": {
+        "Crystals (Kristaller)": {"Green Crystal": 100000, "Yellow Crystal": 200000, "Red Crystal": 300000, "Onyx Crystal": 500000},
+        "Chests (Kutular)": {"Treasure Token": 500000, "Gold Chest": 3000000, "Royal Chest": 5000000, "Golden Jade": 10000000, "Celestial Chest": 15000000}
+    },
+    "Droplar (Mob & Boss)": {
+        "Genel Liste": {"Skill Book": 1000000, "Epic Upgrade Scroll": 3000000, "Unique Upgrade Scroll": 15000000, "Relic Upgrade Scroll": 5000000, "Epic Weapon Shard": 500000}
+    },
+    "Craft (Üretim)": {"Manuel Giriş": {}},
+    "Upgrade (Basma)": {"Genel": {"Basılmış (+7) İtem": 50000000, "Basılmış (+8) İtem": 500000000, "Yanan İtem (Gider)": 0}}
+}
+
+def get_prices_cloud():
+    active_db = BASE_DB.copy()
+    try:
+        sh = get_google_sheet()
+        ws = sh.worksheet("Prices")
+        records = ws.get_all_records() # [{'Item': 'Oak Wood', 'Price': 15000}, ...]
+        
+        # Listeyi Dict'e çevir: {'Oak Wood': 15000}
+        price_map = {str(r['Item']): int(r['Price']) for r in records}
+        
+        # Yapıyı güncelle
+        for cat in active_db:
+            for sub in active_db[cat]:
+                for item in active_db[cat][sub]:
+                    if item in price_map:
+                        active_db[cat][sub][item] = price_map[item]
+        return active_db
+    except:
+        return active_db
+
+def save_prices_cloud(current_db):
+    # Sheet'i temizle ve yeniden yaz
+    sh = get_google_sheet()
+    ws = sh.worksheet("Prices")
+    ws.clear()
+    ws.append_row(["Item", "Price"]) # Başlık
+    
+    rows = []
+    for cat in current_db:
+        for sub in current_db[cat]:
+            for item, price in current_db[cat][sub].items():
+                rows.append([item, price])
+    
+    ws.append_rows(rows)
+    return True
+
+# --- DATA YÖNETİMİ (DÖNEMLER) ---
+def get_periods_cloud():
+    try:
+        sh = get_google_sheet()
+        ws = sh.worksheet("Periods")
+        data = ws.get_all_records() # [{'Donem_Adi': '...', 'Baslangic': '...', 'Bitis': '...'}]
+        periods = {}
+        for r in data:
+            periods[r['Donem_Adi']] = {"start": r['Baslangic'], "end": r['Bitis']}
+        return periods
+    except: return {}
+
+def save_period_cloud(name, start, end):
+    sh = get_google_sheet()
+    ws = sh.worksheet("Periods")
+    ws.append_row([name, str(start), str(end)])
+    return True
+
+def delete_period_cloud(name):
+    # Satır silme biraz maliyetli, tümünü alıp yeniden yazalım
+    sh = get_google_sheet()
+    ws = sh.worksheet("Periods")
+    all_data = ws.get_all_records()
+    new_data = [d for d in all_data if d['Donem_Adi'] != name]
+    
+    ws.clear()
+    ws.append_row(["Donem_Adi", "Baslangic", "Bitis"])
+    rows = [[d['Donem_Adi'], d['Baslangic'], d['Bitis']] for d in new_data]
+    if rows: ws.append_rows(rows)
+    return True
+
+# --- ŞİFRE EKRANI ---
+def check_password():
+    def password_entered():
+        if st.session_state["password"] == st.secrets["app_password"]:
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state:
+        st.text_input("Şifre:", type="password", on_change=password_entered, key="password")
+        return False
+    elif not st.session_state["password_correct"]:
+        st.text_input("Şifre:", type="password", on_change=password_entered, key="password")
+        st.error("😕 Hatalı şifre")
+        return False
+    else:
+        return True
+
+if check_password():
+    # --- UYGULAMA BAŞLANGICI ---
+    sh = init_sheets() # Sheetleri kontrol et/yarat
+    ITEM_DB = get_prices_cloud()
+    PERIOD_DB = get_periods_cloud()
+    
+    # --- SOL MENÜ ---
+    st.sidebar.title("Menü")
+    sayfa = st.sidebar.radio("Git:", ["📝 Yeni Kayıt Ekle", "⚙️ Piyasa Ayarları", "📊 Analiz & Defter"])
+    st.sidebar.markdown("---")
+    
+    # Premium Yönetimi (Cloud)
+    with st.sidebar.expander("👑 Premium Yönetimi", expanded=False):
+        new_p_name = st.text_input("Dönem Adı", placeholder="Örn: Kasım Farmı")
+        new_p_start = st.date_input("Başlangıç", datetime.date.today())
+        if st.button("Dönem Ekle"):
+            if new_p_name:
+                end_date = new_p_start + timedelta(days=30)
+                save_period_cloud(new_p_name, new_p_start, end_date)
+                st.success("Eklendi!"); st.rerun()
+        
+        if PERIOD_DB:
+            st.markdown("---")
+            del_p = st.selectbox("Silinecek:", list(PERIOD_DB.keys()), index=None)
+            if del_p and st.button("Sil"):
+                delete_period_cloud(del_p)
+                st.rerun()
+
+    st.sidebar.info(f"1 GB = **{GB_FIYATI_TL} TL**")
+
+    # --- SAYFALAR ---
+    if sayfa == "📝 Yeni Kayıt Ekle":
+        st.title("📝 Yeni Kayıt (Cloud)")
+        tab_toplu, tab_manuel = st.tabs(["📦 Toplu Giriş", "✍️ Manuel Giriş"])
+        
+        with tab_toplu:
+            cats = ["Gathering (Toplama)", "Etkinlikler", "Droplar (Mob & Boss)", "Upgrade (Basma)"]
+            c1, c2 = st.columns(2)
+            sec_cat = c1.selectbox("Kategori", cats, key="bc")
+            
+            alt_kats = list(ITEM_DB[sec_cat].keys())
+            # Gathering sıralaması (Kısaltıldı)
+            if sec_cat == "Gathering (Toplama)":
+                desired = ["Woodcutting (Odunculuk)", "Mining (Madencilik)", "Quarrying (Taşçılık)", "Archaeology (Arkeoloji)", "Fishing (Balıkçılık)", "Harvesting (Çiftçilik)", "Skinning (Dericilik)", "Herbalism (Bitkicilik)"]
+                alt_kats = [x for x in desired if x in alt_kats] + [x for x in alt_kats if x not in desired]
+            
+            sec_sub = alt_kats[0]
+            if len(alt_kats) > 1: sec_sub = c2.selectbox("Bölüm", alt_kats, key="bs")
+            
+            st.markdown("---")
+            d1, d2 = st.columns([1,3])
+            tarih = d1.date_input("Tarih", datetime.date.today(), key="bd")
+            notlar = d2.text_input("Not", key="bn")
+            
+            st.subheader(f"📦 {sec_sub}")
+            with st.form("batch"):
+                items = ITEM_DB[sec_cat][sec_sub]
+                inputs = {}
+                item_list = list(items.items())
+                for i in range(0, len(item_list), 3):
+                    chunk = item_list[i:i+3]
+                    cols = st.columns(3)
+                    for j, (name, price) in enumerate(chunk):
+                        with cols[j]:
+                            inputs[name] = st.number_input(f"{name}", min_value=0, step=1, help=f"Piyasa: {format_price(price)}", key=f"q_{name}")
+                
+                if st.form_submit_button("💾 Kaydet"):
+                    count = 0
+                    for nm, qty in inputs.items():
+                        if qty > 0:
+                            prc = ITEM_DB[sec_cat][sec_sub][nm]
+                            save_entry_cloud(tarih, sec_cat, sec_sub, nm, qty, prc, notlar)
+                            count += 1
+                    if count > 0: st.success(f"{count} kalem eklendi!"); st.toast("Kaydedildi!")
+                    else: st.warning("Adet giriniz.")
+
+        with tab_manuel:
+            # (Manuel giriş mantığı aynı, sadece save_entry_cloud kullanıyor)
+            mc1, mc2 = st.columns(2)
+            m_cat = mc1.selectbox("Kategori", list(ITEM_DB.keys()), key="mc")
+            m_subs = list(ITEM_DB[m_cat].keys())
+            m_sub = m_subs[0]
+            if len(m_subs) > 1: m_sub = mc2.selectbox("Bölüm", m_subs, key="ms")
+            
+            m_items = list(ITEM_DB[m_cat][m_sub].keys()) + ["Diğer"]
+            m_item = st.selectbox("Eşya", m_items, key="mi")
+            
+            def_price = 0
+            fin_name = m_item
+            if m_item == "Diğer" or m_cat == "Craft (Üretim)":
+                fin_name = st.text_input("Adı", key="mni")
+            else:
+                def_price = ITEM_DB[m_cat][m_sub][m_item]
+                
+            with st.form("manual"):
+                c1, c2, c3 = st.columns(3)
+                mt = c1.date_input("Tarih", datetime.date.today(), key="md")
+                mq = c2.number_input("Adet", min_value=1, value=1, key="mq")
+                mp = c3.text_input("Fiyat", value=format_price(def_price), key="mp")
+                mn = st.text_area("Not", key="mn")
+                if st.form_submit_button("Kaydet"):
+                    real_p = parse_price(mp)
+                    if fin_name:
+                        save_entry_cloud(mt, m_cat, m_sub, fin_name, mq, real_p, mn)
+                        st.success("Kaydedildi")
+                    else: st.error("İsim girin")
+
+    elif sayfa == "⚙️ Piyasa Ayarları":
+        st.title("⚙️ Piyasa Ayarları")
+        with st.container(border=True):
+            e_cat = st.selectbox("Kategori", list(ITEM_DB.keys()))
+            if e_cat == "Craft (Üretim)": st.warning("Manuel kategori.")
+            else:
+                e_sub = st.selectbox("Bölüm", list(ITEM_DB[e_cat].keys()))
+                with st.form("prices"):
+                    new_prices = {}
+                    items = ITEM_DB[e_cat][e_sub]
+                    item_l = list(items.items())
+                    for i in range(0, len(item_l), 3):
+                        chunk = item_l[i:i+3]
+                        cols = st.columns(3)
+                        for j, (nm, pr) in enumerate(chunk):
+                            with cols[j]:
+                                if nm == "Treasure Token": new_prices[nm] = pr; continue
+                                new_prices[nm] = parse_price(st.text_input(nm, value=format_price(pr), key=f"p_{nm}"))
+                    
+                    if "Treasure Token" in items:
+                        st.info(f"Treasure Token: {format_price(items['Treasure Token'])}")
+                        new_prices["Treasure Token"] = items["Treasure Token"]
+                        
+                    if st.form_submit_button("Güncelle"):
+                        if "Royal Chest" in new_prices:
+                            new_prices["Treasure Token"] = int(new_prices["Royal Chest"] / 9)
+                        ITEM_DB[e_cat][e_sub] = new_prices
+                        if save_prices_cloud(ITEM_DB): st.success("Fiyatlar güncellendi!")
+
+    elif sayfa == "📊 Analiz & Defter":
+        st.title("📊 Analiz")
+        df = get_data()
+        
+        if not df.empty:
+            with st.expander("🔍 Filtrele", expanded=True):
+                c1, c2, c3 = st.columns(3)
+                opts = ["Tüm Zamanlar", "Bugün", "Son 7 Gün", "Bu Ay"]
+                if PERIOD_DB: opts += [f"👑 {p}" for p in PERIOD_DB]
+                d_fil = c1.selectbox("Dönem", opts)
+                cat_fil = c2.multiselect("Kategori", df["Kategori"].unique())
+                av_sub = df["Alt_Kategori"].unique()
+                if cat_fil: av_sub = df[df["Kategori"].isin(cat_fil)]["Alt_Kategori"].unique()
+                sub_fil = c3.multiselect("Bölüm", av_sub)
+                
+                df_f = df.copy()
+                act_p = None
+                if d_fil == "Bugün": df_f = df_f[df_f["Tarih"] == pd.Timestamp.today().normalize()]
+                elif d_fil == "Son 7 Gün": df_f = df_f[df_f["Tarih"] >= (pd.Timestamp.today() - timedelta(days=7))]
+                elif d_fil == "Bu Ay": 
+                    t = pd.Timestamp.today()
+                    df_f = df_f[(df_f["Tarih"].dt.month == t.month) & (df_f["Tarih"].dt.year == t.year)]
+                elif d_fil.startswith("👑"):
+                    pn = d_fil.replace("👑 ", "")
+                    if pn in PERIOD_DB:
+                        act_p = pn
+                        s = pd.to_datetime(PERIOD_DB[pn]["start"])
+                        e = pd.to_datetime(PERIOD_DB[pn]["end"])
+                        df_f = df_f[(df_f["Tarih"] >= s) & (df_f["Tarih"] <= e)]
+                
+                if cat_fil: df_f = df_f[df_f["Kategori"].isin(cat_fil)]
+                if sub_fil: df_f = df_f[df_f["Alt_Kategori"].isin(sub_fil)]
+            
+            if act_p:
+                rem = (pd.to_datetime(PERIOD_DB[act_p]["end"]).date() - datetime.date.today()).days
+                st.info(f"👑 **{act_p}** | Kalan: {max(0, rem)} gün")
+            
+            tot_c = df_f["Toplam_Deger"].sum()
+            tot_tl = df_f["Toplam_TL"].sum()
+            c1, c2 = st.columns(2)
+            c1.metric("💰 Kazanç", format_m(tot_c))
+            c2.metric("🇹🇷 Değer", f"{tot_tl:,.0f} TL")
+            
+            st.markdown("---")
+            t1, t2, t3 = st.tabs(["📅 Günlük", "📊 Özet", "🛠️ Geçmiş"])
+            
+            with t1:
+                col_ozet, col_detay = st.columns([1, 1.5])
+                ds = df_f.groupby(df_f["Tarih"].dt.date)[["Toplam_Deger", "Toplam_TL"]].sum().reset_index().sort_values("Tarih", ascending=False)
+                ds["Coin"] = ds["Toplam_Deger"].apply(lambda x: f"{x/1000000:.2f}m")
+                ds["TL"] = ds["Toplam_TL"].apply(lambda x: f"{x:.0f} TL")
+                col_ozet.dataframe(ds[["Tarih", "Coin", "TL"]], use_container_width=True, hide_index=True)
+                
+                if not ds.empty:
+                    sel_d = col_detay.selectbox("Detay Tarihi:", ds["Tarih"], format_func=lambda x: x.strftime("%d.%m"))
+                    dd = df[df["Tarih"].dt.date == sel_d]
+                    subs = dd["Alt_Kategori"].unique()
+                    for s in subs:
+                        sd = dd[dd["Alt_Kategori"] == s]
+                        stotal = sd["Toplam_Deger"].sum()
+                        grp = sd.groupby(["Eşya", "Birim_Fiyat"]).agg({"Adet":"sum", "Toplam_Deger":"sum"}).reset_index()
+                        grp["Birim"] = grp["Birim_Fiyat"].apply(format_price)
+                        grp["Top"] = grp["Toplam_Deger"].apply(format_price)
+                        with col_detay.expander(f"{s} | {format_price(stotal)}"):
+                            st.dataframe(grp[["Eşya", "Adet", "Birim", "Top"]], use_container_width=True, hide_index=True)
+
+            with t2:
+                c_i, c_p = st.columns([1.5, 1])
+                if not df_f.empty:
+                    item_s = df_f.groupby(["Alt_Kategori", "Eşya"]).agg({"Adet":"sum", "Toplam_Deger":"sum"}).reset_index().sort_values("Toplam_Deger", ascending=False)
+                    item_s["Gelir"] = item_s["Toplam_Deger"].apply(format_price)
+                    c_i.dataframe(item_s[["Alt_Kategori", "Eşya", "Adet", "Gelir"]], use_container_width=True, hide_index=True)
+                    
+                    cat_s = df_f.groupby("Alt_Kategori")["Toplam_Deger"].sum().reset_index()
+                    cat_s["%"] = (cat_s["Toplam_Deger"] / cat_s["Toplam_Deger"].sum() * 100).map('{:.1f}%'.format)
+                    c_p.dataframe(cat_s[["Alt_Kategori", "%"]], use_container_width=True, hide_index=True)
+            
+            with t3:
+                # Cloud'da Silme/Düzenleme biraz daha karmaşık olduğu için
+                # Şimdilik sadece listeyi gösteriyoruz.
+                # Gerçek veri manipülasyonu için satır ID'si gerekir.
+                # V1'de sadece liste yeterli.
+                st.dataframe(df_f.sort_values("Tarih", ascending=False), use_container_width=True)
+                st.info("⚠️ Bulut sürümünde tekil düzenleme özelliği güvenlik nedeniyle kısıtlıdır. Google Drive'dan düzenleyebilirsiniz.")
+        else:
+            st.info("Kayıt yok.")
