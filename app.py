@@ -9,7 +9,7 @@ import time
 import plotly.express as px
 
 # --- AYARLAR ---
-st.set_page_config(page_title="Rise Farm (Cloud V46)", layout="wide", page_icon="☁️")
+st.set_page_config(page_title="Rise Farm (Cloud V47)", layout="wide", page_icon="💰")
 GB_FIYATI_TL = 360.0
 BIR_GB_COIN = 100_000_000.0
 
@@ -25,19 +25,12 @@ def get_google_sheet():
 # --- SHEET BAŞLATUCU ---
 def init_sheets():
     sh = get_google_sheet()
-    # Logs
     try: sh.worksheet("Logs")
     except: 
         ws = sh.add_worksheet("Logs", 1000, 11)
         ws.append_row(["Sahip", "Tarih", "Kategori", "Alt_Kategori", "Eşya", "Adet", "Birim_Fiyat", "Toplam_Deger", "Toplam_TL", "Notlar"])
-    
-    # Prices
     try: sh.worksheet("Prices")
-    except: 
-        ws = sh.add_worksheet("Prices", 1000, 3)
-        ws.append_row(["Item", "Price"]) # Başlık satırı önemli!
-    
-    # Periods
+    except: sh.add_worksheet("Prices", 1000, 3)
     try: sh.worksheet("Periods")
     except: 
         ws = sh.add_worksheet("Periods", 100, 4)
@@ -64,7 +57,7 @@ def format_price(value):
 def format_m(deger):
     return f"{deger/1_000_000:.2f} m"
 
-# --- DATA YÖNETİMİ ---
+# --- DATA YÖNETİMİ (HATA DÜZELTİLMİŞ OKUMA) ---
 @st.cache_data(ttl=5)
 def get_data_cached(username):
     try:
@@ -80,17 +73,25 @@ def get_data_cached(username):
         else:
             return pd.DataFrame()
             
+        # --- KRİTİK DÜZELTME BURADA ---
         cols = ["Adet", "Birim_Fiyat", "Toplam_Deger", "Toplam_TL"]
         for c in cols:
             if c in df.columns:
-                def clean_val(x):
+                def safe_clean(x):
                     try:
                         if isinstance(x, (int, float)): return float(x)
-                        x = str(x).replace('.', '').replace(',', '.')
-                        x = x.lower().replace('tl', '').replace('m', '').replace('k', '').strip()
-                        return float(x)
+                        s = str(x).strip()
+                        # Sadece Virgül varsa (172,8) -> Nokta yap (172.8)
+                        if ',' in s and '.' not in s:
+                            return float(s.replace(',', '.'))
+                        # Hem nokta hem virgül varsa (1.200,50) -> Noktayı sil, virgülü nokta yap
+                        elif ',' in s and '.' in s:
+                            return float(s.replace('.', '').replace(',', '.'))
+                        # Sadece nokta varsa (172.8) -> DOKUNMA! (Eski hata buradaydı)
+                        return float(s)
                     except: return 0
-                df[c] = df[c].apply(clean_val).fillna(0)
+                
+                df[c] = df[c].apply(safe_clean).fillna(0)
         
         if "Tarih" in df.columns:
             df["Tarih"] = pd.to_datetime(df["Tarih"], errors='coerce')
@@ -114,6 +115,50 @@ def save_entry_cloud(username, tarih, kategori, alt_kategori, esya, adet, fiyat,
     clear_cache()
     return True
 
+# --- ONARIM FONKSİYONU (MATEMATİĞİ DÜZELTİR) ---
+def repair_user_data(username):
+    sh = get_google_sheet()
+    ws = sh.worksheet("Logs")
+    all_values = ws.get_all_values()
+    
+    if not all_values: return False
+    
+    header = all_values[0]
+    data_rows = all_values[1:]
+    
+    updated_rows = []
+    fixed_count = 0
+    
+    for row in data_rows:
+        # row: [Sahip(0), Tarih(1), Kat(2), AltKat(3), Esya(4), Adet(5), Fiyat(6), Toplam(7), TL(8), Not(9)]
+        if len(row) > 6 and str(row[0]) == username:
+            try:
+                # String temizliği yapmadan önce güvenli parse
+                adet_raw = str(row[5]).replace('.', '').replace(',', '.') if ',' in str(row[5]) else str(row[5])
+                fiyat_raw = str(row[6]).replace('.', '').replace(',', '.') if ',' in str(row[6]) else str(row[6])
+                
+                adet = float(adet_raw)
+                fiyat = float(fiyat_raw)
+                
+                # DOĞRU HESAPLAMA
+                yeni_toplam_coin = adet * fiyat
+                yeni_tl = (yeni_toplam_coin / BIR_GB_COIN) * GB_FIYATI_TL
+                
+                # Satırı güncelle
+                row[7] = yeni_toplam_coin
+                row[8] = yeni_tl
+                fixed_count += 1
+            except:
+                pass 
+        
+        updated_rows.append(row)
+    
+    ws.clear()
+    ws.append_row(header)
+    ws.append_rows(updated_rows)
+    clear_cache()
+    return True
+
 # --- SİLME VE GÜNCELLEME ---
 def delete_row_by_ui_index(df_user, ui_index):
     sh = get_google_sheet()
@@ -130,7 +175,7 @@ def delete_row_by_ui_index(df_user, ui_index):
             str(row[0]) == str(target_row['Sahip']) and 
             str(row[1]) == target_date and
             str(row[4]) == str(target_row['Eşya']) and
-            str(row[5]) == str(target_row['Adet'])): # int/str farkını yoksayarak dene
+            str(row[5]) == str(int(target_row['Adet']))):
             row_to_del = i + 1
             break
             
@@ -343,56 +388,30 @@ if check_login():
                 alt_kats = [x for x in desired if x in alt_kats] + [x for x in alt_kats if x not in desired]
             sec_sub = alt_kats[0]
             if len(alt_kats) > 1: sec_sub = c2.selectbox("Bölüm", alt_kats, key="bs")
-            
             st.markdown("---")
             d1, d2 = st.columns([1,3])
             tarih = d1.date_input("Tarih", datetime.date.today(), key="bd")
             notlar = d2.text_input("Not", key="bn")
-            
             st.subheader(f"📦 {sec_sub}")
-            
-            # --- CANLI HESAPLAMA MANTIĞI (Formsuz Yapı) ---
-            # Form kullanmıyoruz ki her sayı girdiğinde anlık hesaplasın.
-            
-            items_dict = ITEM_DB[sec_cat][sec_sub]
-            items_list = list(items_dict.items())
-            
-            # Kullanıcının girdiği değerleri tutacak sözlük
-            user_inputs = {}
-            
-            # Toplam Tahmini Gösterge
-            total_est_coin = 0
-            
-            for i in range(0, len(items_list), 3):
-                chunk = items_list[i:i+3]
-                cols = st.columns(3)
-                for j, (name, price) in enumerate(chunk):
-                    with cols[j]:
-                        fiyat_etiketi = format_price(price)
-                        # Live update için key benzersiz olmalı
-                        qty = st.number_input(f"{name}", min_value=0, step=1, help=f"Piyasa: {fiyat_etiketi} Coin", key=f"q_{name}")
-                        user_inputs[name] = qty
-                        
-                        # Anlık Toplam Hesabı
+            with st.form("batch"):
+                items = ITEM_DB[sec_cat][sec_sub]
+                inputs = {}
+                item_list = list(items.items())
+                for i in range(0, len(item_list), 3):
+                    chunk = item_list[i:i+3]
+                    cols = st.columns(3)
+                    for j, (name, price) in enumerate(chunk):
+                        with cols[j]:
+                            inputs[name] = st.number_input(f"{name}", min_value=0, step=1, help=f"Piyasa: {format_price(price)}", key=f"q_{name}")
+                if st.form_submit_button("💾 Kaydet"):
+                    count = 0
+                    for nm, qty in inputs.items():
                         if qty > 0:
-                            total_est_coin += qty * price
-
-            st.markdown("---")
-            
-            # CANLI HESAPLAMA SONUCU
-            if total_est_coin > 0:
-                est_tl = (total_est_coin / BIR_GB_COIN) * GB_FIYATI_TL
-                st.info(f"💰 **Tahmini Kazanç:** {format_price(total_est_coin)} Coin  |  🇹🇷 **{est_tl:.2f} TL**")
-            
-            if st.button("💾 Kaydet (Toplu)", type="primary"):
-                count = 0
-                for nm, qty in user_inputs.items():
-                    if qty > 0:
-                        prc = ITEM_DB[sec_cat][sec_sub][nm]
-                        save_entry_cloud(CURRENT_USER, tarih, sec_cat, sec_sub, nm, qty, prc, notlar)
-                        count += 1
-                if count > 0: st.success(f"{count} kalem eklendi!"); time.sleep(1); st.rerun()
-                else: st.warning("Lütfen en az bir ürüne adet giriniz.")
+                            prc = ITEM_DB[sec_cat][sec_sub][nm]
+                            save_entry_cloud(CURRENT_USER, tarih, sec_cat, sec_sub, nm, qty, prc, notlar)
+                            count += 1
+                    if count > 0: st.success(f"{count} kalem eklendi!"); st.toast("Kaydedildi!")
+                    else: st.warning("Adet giriniz.")
 
         with tab_manuel:
             mc1, mc2 = st.columns(2)
@@ -402,36 +421,22 @@ if check_login():
             if len(m_subs) > 1: m_sub = mc2.selectbox("Bölüm", m_subs, key="ms")
             m_items = list(ITEM_DB[m_cat][m_sub].keys()) + ["Diğer"]
             m_item = st.selectbox("Eşya", m_items, key="mi")
-            
-            fin_name = m_item
             def_price = 0
-            if m_item == "Diğer" or m_cat == "Craft (Üretim)": 
-                fin_name = st.text_input("Adı", key="mni")
-            else: 
-                def_price = ITEM_DB[m_cat][m_sub][m_item]
-            
-            # Manuel Giriş de Canlı Olsun
-            c1, c2, c3 = st.columns(3)
-            mt = c1.date_input("Tarih", datetime.date.today(), key="md")
-            mq = c2.number_input("Adet", min_value=1, value=1, key="mq")
-            
-            # Fiyatı text olarak alıp parse ediyoruz
-            mp_str = c3.text_input("Birim Fiyat", value=format_price(def_price), key="mp")
-            real_p = parse_price(mp_str)
-            
-            mn = st.text_area("Not", key="mn")
-            
-            # Canlı Hesap
-            if mq > 0 and real_p > 0:
-                man_total = mq * real_p
-                man_tl = (man_total / BIR_GB_COIN) * GB_FIYATI_TL
-                st.info(f"💰 **Tahmini:** {format_price(man_total)} Coin | {man_tl:.2f} TL")
-
-            if st.button("💾 Kaydet (Manuel)"):
-                if fin_name:
-                    save_entry_cloud(CURRENT_USER, mt, m_cat, m_sub, fin_name, mq, real_p, mn)
-                    st.success("Kaydedildi"); time.sleep(1); st.rerun()
-                else: st.error("İsim girin")
+            fin_name = m_item
+            if m_item == "Diğer" or m_cat == "Craft (Üretim)": fin_name = st.text_input("Adı", key="mni")
+            else: def_price = ITEM_DB[m_cat][m_sub][m_item]
+            with st.form("manual"):
+                c1, c2, c3 = st.columns(3)
+                mt = c1.date_input("Tarih", datetime.date.today(), key="md")
+                mq = c2.number_input("Adet", min_value=1, value=1, key="mq")
+                mp = c3.text_input("Fiyat", value=format_price(def_price), key="mp")
+                mn = st.text_area("Not", key="mn")
+                if st.form_submit_button("💾 Kaydet"):
+                    real_p = parse_price(mp)
+                    if fin_name:
+                        save_entry_cloud(CURRENT_USER, mt, m_cat, m_sub, fin_name, mq, real_p, mn)
+                        st.success("Kaydedildi")
+                    else: st.error("İsim girin")
 
     # --- SAYFA: PİYASA AYARLARI ---
     elif sayfa == "⚙️ Piyasa Ayarları":
@@ -449,10 +454,6 @@ if check_login():
             if e_cat == "Craft (Üretim)": st.warning("Manuel kategori.")
             else:
                 e_sub = st.selectbox("Bölüm", list(ITEM_DB[e_cat].keys()))
-                
-                # Form yerine normal inputlar kullanıyoruz ki anlık görünsün ama 
-                # çok fazla input olacağı için burada form kullanmak daha performanslı.
-                # Sadece kaydederken güncelleriz.
                 with st.form("prices"):
                     new_prices = {}
                     items = ITEM_DB[e_cat][e_sub]
@@ -463,19 +464,15 @@ if check_login():
                         for j, (nm, pr) in enumerate(chunk):
                             with cols[j]:
                                 if nm == "Treasure Token": new_prices[nm] = pr; continue
-                                # Mevcut fiyatı göster
-                                new_price_str = st.text_input(f"{nm}", value=format_price(pr), key=f"p_{nm}")
-                                new_prices[nm] = parse_price(new_price_str)
-                    
+                                new_prices[nm] = parse_price(st.text_input(nm, value=format_price(pr), key=f"p_{nm}"))
                     if "Treasure Token" in items:
                         new_prices["Treasure Token"] = items["Treasure Token"]
                         st.info(f"Treasure Token: {format_price(items['Treasure Token'])}")
-                    
                     if st.form_submit_button("Güncelle"):
                         if "Royal Chest" in new_prices:
                             new_prices["Treasure Token"] = int(new_prices["Royal Chest"] / 9)
                         ITEM_DB[e_cat][e_sub] = new_prices
-                        if save_prices_cloud(ITEM_DB): st.success("Fiyatlar güncellendi!"); st.rerun()
+                        if save_prices_cloud(ITEM_DB): st.success("Fiyatlar güncellendi!")
 
     # --- SAYFA: ANALİZ ---
     elif sayfa == "📊 Analiz & Defter":
@@ -584,7 +581,14 @@ if check_login():
                                     st.success("Güncellendi!"); st.rerun()
                                 else: st.error("Hata.")
                 with st.expander("🗑️ Veri Tabanı Temizliği"):
-                    if st.button("TÜM KAYITLARIMI SİL"):
+                    st.warning("DİKKAT: Bu işlem hatalı kayıtları topluca temizler ve yeniden hesaplar.")
+                    if st.button("🔄 TÜM VERİLERİ YENİDEN HESAPLA (ONAR)"):
+                        if repair_user_data(CURRENT_USER):
+                            st.success("Veriler onarıldı ve TL hesapları düzeltildi."); st.rerun()
+                        else:
+                            st.error("Onarım sırasında hata veya veri yok.")
+                    
+                    if st.button("TÜM KAYITLARIMI SİL (RESET)"):
                         if clear_user_data(CURRENT_USER): st.success("Temizlendi."); st.rerun()
         else:
             st.info("Kayıt yok.")
