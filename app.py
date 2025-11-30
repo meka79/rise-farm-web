@@ -99,6 +99,7 @@ def save_entry_cloud(username, tarih, kategori, alt_kategori, esya, adet, fiyat,
     ws = sh.worksheet("Logs")
     
     toplam_coin = adet * fiyat
+    # TL Hesabı burada yapılır ama gösterim anlık hesaplanır
     toplam_tl = (toplam_coin / BIR_GB_COIN) * GB_FIYATI_TL
     
     tarih_str = tarih.strftime("%Y-%m-%d")
@@ -344,7 +345,6 @@ if check_login():
             with st.form("batch"):
                 items = ITEM_DB[sec_cat][sec_sub]
                 inputs = {}
-                # DÜZELTME BURADA: item_l yerine items_list kullanıldı
                 items_list = list(items.items())
                 for i in range(0, len(items_list), 3):
                     chunk = items_list[i:i+3]
@@ -352,6 +352,7 @@ if check_login():
                     for j, (name, price) in enumerate(chunk):
                         with cols[j]:
                             inputs[name] = st.number_input(f"{name}", min_value=0, step=1, help=f"Piyasa: {format_price(price)}", key=f"q_{name}")
+                st.markdown("---")
                 if st.form_submit_button("💾 Kaydet"):
                     count = 0
                     for nm, qty in inputs.items():
@@ -406,10 +407,9 @@ if check_login():
                 with st.form("prices"):
                     new_prices = {}
                     items = ITEM_DB[e_cat][e_sub]
-                    # DÜZELTME BURADA: item_l yerine items_list
-                    items_list = list(items.items())
-                    for i in range(0, len(items_list), 3):
-                        chunk = items_list[i:i+3]
+                    item_l = list(items.items())
+                    for i in range(0, len(item_l), 3):
+                        chunk = item_l[i:i+3]
                         cols = st.columns(3)
                         for j, (nm, pr) in enumerate(chunk):
                             with cols[j]:
@@ -463,25 +463,37 @@ if check_login():
                 rem = (pd.to_datetime(PERIOD_DB[act_p]["end"]).date() - datetime.date.today()).days
                 st.info(f"👑 **{act_p}** | Kalan: {max(0, rem)} gün")
             
-            # --- KPI HESABI ---
+            # --- KPI HESABI (YENİ DÜZEN - 3 SÜTUN) ---
+            # TL'yi Coin üzerinden anlık hesaplıyoruz
             tot_c = df_filtered["Toplam_Deger"].sum()
-            # TL'yi Coin üzerinden kesin hesaplıyoruz
-            tot_tl = (tot_c / BIR_GB_COIN) * GB_FIYATI_TL
+            tot_tl_comma = (tot_c / BIR_GB_COIN) * GB_FIYATI_TL
+            tot_tl_dot = (tot_c / BIR_GB_COIN) * GB_FIYATI_TL
             
-            c1, c2 = st.columns(2)
+            c1, c2, c3 = st.columns(3)
             c1.metric("💰 Kazanç", format_m(tot_c))
-            c2.metric("🇹🇷 Değer", f"{tot_tl:,.0f} TL")
+            
+            # TEST: Virgüllü Format
+            try:
+                tl_str_comma = f"{tot_tl_comma:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                c2.metric("🇹🇷 Değer (Virgül)", f"{tl_str_comma} TL")
+            except:
+                c2.metric("🇹🇷 Değer (Virgül)", "Hata")
+            
+            # TEST: Noktalı Format (Standart)
+            try:
+                tl_str_dot = f"{tot_tl_dot:,.2f}"
+                c3.metric("🇺🇸 Değer (Nokta)", f"{tl_str_dot} TL")
+            except:
+                c3.metric("🇺🇸 Değer (Nokta)", "Hata")
             
             st.markdown("---")
             t1, t2, t3 = st.tabs(["📅 Günlük", "📊 Özet", "🛠️ Geçmiş"])
             
             with t1:
                 col_ozet, col_detay = st.columns([1, 1.5])
-                # Günlük Özet
                 ds = df_filtered.groupby(df_filtered["Tarih"].dt.date)[["Toplam_Deger"]].sum().reset_index().sort_values("Tarih", ascending=False)
                 ds["Coin"] = ds["Toplam_Deger"].apply(lambda x: f"{x/1000000:.2f}m")
-                # TL'yi burada da yeniden hesapla
-                ds["TL"] = ds["Toplam_Deger"].apply(lambda x: f"{(x/BIR_GB_COIN)*GB_FIYATI_TL:.0f} TL")
+                ds["TL"] = ds["Toplam_Deger"].apply(lambda x: f"{(x/BIR_GB_COIN)*GB_FIYATI_TL:.2f} TL")
                 col_ozet.dataframe(ds[["Tarih", "Coin", "TL"]], use_container_width=True, hide_index=True)
                 
                 if not ds.empty:
@@ -536,13 +548,7 @@ if check_login():
                                     st.success("Güncellendi!"); st.rerun()
                                 else: st.error("Hata.")
                 with st.expander("🗑️ Veri Tabanı Temizliği"):
-                    st.warning("DİKKAT: Bu işlem hatalı kayıtları topluca temizler ve yeniden hesaplar.")
-                    if st.button("🔄 TÜM VERİLERİ YENİDEN HESAPLA (ONAR)"):
-                        if repair_user_data(CURRENT_USER):
-                            st.success("Veriler onarıldı ve TL hesapları düzeltildi."); st.rerun()
-                        else:
-                            st.error("Onarım sırasında hata veya veri yok.")
-                    if st.button("TÜM KAYITLARIMI SİL (RESET)"):
+                    if st.button("TÜM KAYITLARIMI SİL"):
                         if clear_user_data(CURRENT_USER): st.success("Temizlendi."); st.rerun()
         else:
             st.info("Kayıt yok.")
