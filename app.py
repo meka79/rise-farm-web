@@ -38,24 +38,15 @@ def init_sheets():
         ws.append_row(["Sahip", "Donem_Adi", "Baslangic", "Bitis"])
     return sh
 
-# --- YARDIMCI FONKSİYONLAR (M/K ÇEVİRİCİ) ---
+# --- YARDIMCI FONKSİYONLAR ---
 def parse_price(value_str):
-    """ '1.5m' -> 1500000, '12k' -> 12000 çevirir """
     if isinstance(value_str, (int, float)): return int(value_str)
-    s = str(value_str).lower().strip().replace(',', '.') # Virgülü noktaya çevir
+    s = str(value_str).lower().strip().replace(',', '.') 
     multiplier = 1
-    
-    if s.endswith('k'):
-        multiplier = 1_000
-        s = s[:-1]
-    elif s.endswith('m'):
-        multiplier = 1_000_000
-        s = s[:-1]
-    
-    try:
-        return int(float(s) * multiplier)
-    except:
-        return 0
+    if s.endswith('k'): multiplier = 1_000; s = s[:-1]
+    elif s.endswith('m'): multiplier = 1_000_000; s = s[:-1]
+    try: return int(float(s) * multiplier)
+    except: return 0
 
 def format_price(value):
     try: val = float(value)
@@ -76,13 +67,14 @@ def get_data(username):
     
     if df.empty: return pd.DataFrame(columns=["Sahip", "Tarih", "Kategori", "Alt_Kategori", "Eşya", "Adet", "Birim_Fiyat", "Toplam_Deger", "Toplam_TL", "Notlar"])
     
+    # Sadece kendi verilerini gör
     if "Sahip" in df.columns:
         df = df[df["Sahip"] == username]
     
+    # Sayısal Düzeltme
     cols = ["Adet", "Birim_Fiyat", "Toplam_Deger", "Toplam_TL"]
     for c in cols:
         if c in df.columns:
-            # Sheet'ten gelen string sayıları (virgül/nokta) temizle
             df[c] = pd.to_numeric(df[c].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
     
     if "Tarih" in df.columns:
@@ -93,16 +85,121 @@ def get_data(username):
 def save_entry_cloud(username, tarih, kategori, alt_kategori, esya, adet, fiyat, notlar):
     sh = get_google_sheet()
     ws = sh.worksheet("Logs")
-    
     toplam_coin = adet * fiyat
-    # HESAPLAMA: (Toplam Coin / 100 Milyon) * 360 TL
     toplam_tl = (toplam_coin / 100_000_000.0) * GB_FIYATI_TL
-    
     row = [username, str(tarih), kategori, alt_kategori, esya, adet, fiyat, toplam_coin, toplam_tl, notlar]
     ws.append_row(row)
     return True
 
-# --- FİYAT YÖNETİMİ (ORTAK) ---
+# --- SİLME VE DÜZENLEME (CLOUD İÇİN GÜNCELLENDİ) ---
+def delete_entry_cloud(username, rowIndex):
+    # Google Sheets'te satır silmek için tüm veriyi çekip, o satırı çıkarıp tekrar yazmak en güvenlisidir.
+    # Ancak basitlik adına gspread'in delete_rows metodunu kullanacağız.
+    # rowIndex: DataFrame indexi değil, Sheet'teki gerçek satır numarası olmalı (+2 çünkü header var ve index 0'dan başlar)
+    sh = get_google_sheet()
+    ws = sh.worksheet("Logs")
+    
+    # Veriyi tekrar çekip satır numarasını bulmamız lazım (Çünkü filtreleme yapıyoruz)
+    data = ws.get_all_records()
+    df_all = pd.DataFrame(data)
+    
+    # Kullanıcının sildiği satırın gerçek Sheet indexini bul
+    # (Bu kısım biraz trikli, en basiti içeriği eşleştirmek)
+    # Şimdilik basit silme: Tüm listeyi al, sil, tekrar yaz.
+    
+    # 1. Silinecek satırı DataFrame'den düşür (Sadece bu kullanıcı için değil, global listeden o satırı bulup sileceğiz)
+    # rowIndex burada df'in index'i. 
+    
+    # Global DataFrame'i al
+    # Dikkat: get_data() sadece kullanıcıyı getiriyor. Bize ham data lazım.
+    global_data = ws.get_all_records()
+    df_global = pd.DataFrame(global_data)
+    
+    # Kullanıcının gördüğü df'deki rowIndex'e karşılık gelen global indexi bulmak zor olabilir.
+    # Bu yüzden Eşleşme Yöntemi kullanacağız.
+    
+    # Kullanıcının seçtiği satırı alalım (UI'dan gelen)
+    # (Aşağıda UI kısmında bu fonksiyonu çağırırken ilgili satır verisini göndereceğiz)
+    pass 
+
+def delete_row_by_ui_index(df_user, ui_index):
+    # 1. Tüm veriyi çek
+    sh = get_google_sheet()
+    ws = sh.worksheet("Logs")
+    all_values = ws.get_all_values() # Header dahil liste listesi
+    
+    # Header'ı ayır
+    header = all_values[0]
+    data_rows = all_values[1:]
+    
+    # Kullanıcının silmek istediği satırı bulmak için;
+    # df_user, kullanıcının gördüğü filtrelenmiş tablo.
+    # ui_index, bu tablodaki sıra numarası.
+    
+    # Silinecek satırın verileri:
+    target_row = df_user.loc[ui_index]
+    
+    # Bu veriyi data_rows içinde ara ve bulduğunda sil (Sheet satır numarası = index + 2)
+    # Eşleşme kriterleri: Sahip, Tarih(str), Eşya, Adet, Birim_Fiyat
+    
+    row_to_delete_sheet_index = -1
+    
+    for i, row in enumerate(data_rows):
+        # row bir liste: [Sahip, Tarih, Kat, AltKat, Esya, Adet, Fiyat, ...]
+        # Tarih formatı sheet'te string (YYYY-MM-DD), df'de timestamp olabilir.
+        
+        sheet_date = str(row[1])
+        target_date = str(target_row['Tarih'].strftime('%Y-%m-%d'))
+        
+        if (str(row[0]) == str(target_row['Sahip']) and 
+            sheet_date == target_date and
+            str(row[4]) == str(target_row['Eşya']) and
+            str(row[5]) == str(target_row['Adet'])):
+            
+            row_to_delete_sheet_index = i + 2 # Header(1) + 0-index(1)
+            break
+            
+    if row_to_delete_sheet_index != -1:
+        ws.delete_rows(row_to_delete_sheet_index)
+        return True
+    return False
+
+def update_row_by_ui_index(df_user, ui_index, new_data):
+    # Sil ve Yenisini Ekle mantığı en temizidir.
+    if delete_row_by_ui_index(df_user, ui_index):
+        # new_data: {'Tarih': ..., 'Adet': ...}
+        # Eski verileri alıp güncellenenleri değiştirip kaydedelim
+        old_row = df_user.loc[ui_index]
+        save_entry_cloud(
+            old_row['Sahip'],
+            new_data['Tarih'],
+            old_row['Kategori'],
+            old_row['Alt_Kategori'],
+            old_row['Eşya'],
+            new_data['Adet'],
+            new_data['Birim_Fiyat'],
+            new_data['Notlar']
+        )
+        return True
+    return False
+
+def clear_user_data(username):
+    sh = get_google_sheet()
+    ws = sh.worksheet("Logs")
+    all_values = ws.get_all_values()
+    header = all_values[0]
+    data_rows = all_values[1:]
+    
+    # Kullanıcıya ait olmayanları tut
+    keep_rows = [row for row in data_rows if str(row[0]) != username]
+    
+    ws.clear()
+    ws.append_row(header)
+    if keep_rows:
+        ws.append_rows(keep_rows)
+    return True
+
+# --- FİYAT YÖNETİMİ ---
 BASE_DB = {
     "Gathering (Toplama)": {
         "Woodcutting (Odunculuk)": {"Oak Wood": 12000, "Pine Wood": 15000, "Aspen Wood": 20000, "Birch Wood": 25000, "🌟 Holywood": 1400000, "🌟 Firefly Wood": 600000, "🌟 Soulsage": 700000},
@@ -153,14 +250,10 @@ def save_prices_cloud(current_db):
     ws.append_rows(rows)
     return True
 
-# --- JSON YÜKLEME MODÜLÜ (YENİ) ---
 def upload_json_prices(json_file):
     try:
         data = json.load(json_file)
-        # JSON yapısını (Cat->Sub->Item) düzleştirip Sheet'e basalım
         current_db = BASE_DB.copy()
-        
-        # Merge işlemi
         for cat in data:
             if cat in current_db:
                 for sub in data[cat]:
@@ -168,12 +261,9 @@ def upload_json_prices(json_file):
                         for item, price in data[cat][sub].items():
                             if item in current_db[cat][sub]:
                                 current_db[cat][sub][item] = price
-        
-        # Kaydet
         save_prices_cloud(current_db)
         return True
-    except Exception as e:
-        return False
+    except Exception as e: return False
 
 # --- DÖNEMLER ---
 def get_periods_cloud(username):
@@ -333,20 +423,16 @@ if check_login():
     elif sayfa == "⚙️ Piyasa Ayarları":
         st.title("⚙️ Piyasa Ayarları")
         
-        # --- JSON YÜKLEME ALANI (YENİ) ---
         with st.expander("📤 Eski Fiyat Dosyasını Yükle (market_prices.json)", expanded=False):
-            st.info("Bilgisayarınızdaki 'market_prices.json' dosyasını buraya sürükleyin. Fiyatlar otomatik olarak buluta işlenecektir.")
+            st.info("Bilgisayarınızdaki 'market_prices.json' dosyasını buraya sürükleyin.")
             uploaded_file = st.file_uploader("Dosya Seç", type="json")
             if uploaded_file:
                 if st.button("Fiyatları İçe Aktar"):
                     if upload_json_prices(uploaded_file):
-                        st.success("Fiyatlar başarıyla yüklendi! Sayfayı yenileyin.")
-                        st.rerun()
-                    else:
-                        st.error("Dosya okunurken hata oluştu.")
+                        st.success("Fiyatlar yüklendi!"); st.rerun()
+                    else: st.error("Hata oluştu.")
         
         st.markdown("---")
-        
         with st.container(border=True):
             e_cat = st.selectbox("Kategori", list(ITEM_DB.keys()))
             if e_cat == "Craft (Üretim)": st.warning("Manuel kategori.")
@@ -364,8 +450,8 @@ if check_login():
                                 if nm == "Treasure Token": new_prices[nm] = pr; continue
                                 new_prices[nm] = parse_price(st.text_input(nm, value=format_price(pr), key=f"p_{nm}"))
                     if "Treasure Token" in items:
-                        st.info(f"Treasure Token: {format_price(items['Treasure Token'])}")
                         new_prices["Treasure Token"] = items["Treasure Token"]
+                        st.info(f"Treasure Token: {format_price(items['Treasure Token'])}")
                     if st.form_submit_button("Güncelle"):
                         if "Royal Chest" in new_prices:
                             new_prices["Treasure Token"] = int(new_prices["Royal Chest"] / 9)
@@ -417,7 +503,7 @@ if check_login():
             c2.metric("🇹🇷 Değer", f"{tot_tl:,.0f} TL")
             
             st.markdown("---")
-            t1, t2, t3 = st.tabs(["📅 Günlük", "📊 Özet", "🛠️ Geçmiş"])
+            t1, t2, t3 = st.tabs(["📅 Günlük", "📊 Özet", "🛠️ Geçmiş & Düzenle"])
             
             with t1:
                 col_ozet, col_detay = st.columns([1, 1.5])
@@ -451,7 +537,68 @@ if check_login():
                     c_p.dataframe(cat_s[["Alt_Kategori", "%"]], use_container_width=True, hide_index=True)
             
             with t3:
-                st.dataframe(df_f.sort_values("Tarih", ascending=False), use_container_width=True)
-                st.info("⚠️ Cloud sürümünde tekil düzenleme için Google Sheets'i kullanabilirsiniz.")
+                # --- KAYIT SİLME VE DÜZENLEME (CLOUD VERSİYONU) ---
+                st.subheader("🛠️ Kayıt Yönetimi")
+                df_show = df_filtered.sort_values("Tarih", ascending=False)
+                st.dataframe(df_show, use_container_width=True)
+                
+                # Cloud'da düzenleme için önce sil, sonra ekle mantığını kullanacağız
+                # Ancak kullanıcı için bunu tek adımda yapacağız.
+                
+                st.info("💡 **Düzenleme İpucu:** Bir kaydı düzenlemek için 'Düzenle' butonuna basın. Değişiklikleri kaydettiğinizde eski kayıt silinip yenisi eklenecektir.")
+                
+                col_del1, col_del2 = st.columns([3, 1])
+                with col_del1:
+                    delete_options = df_show.apply(lambda x: f"{x.name} | {x['Tarih'].strftime('%d.%m')} - {x['Eşya']} ({x['Adet']})", axis=1)
+                    sel_rec = st.selectbox("İşlem Seç:", delete_options, index=None, placeholder="Kayıt seç...")
+                
+                if sel_rec:
+                    idx = int(sel_rec.split(" | ")[0])
+                    rec = df.loc[idx]
+                    
+                    c_btn1, c_btn2 = st.columns(2)
+                    
+                    # SİLME BUTONU
+                    if c_btn1.button("🗑️ Sil", type="primary"):
+                        if delete_row_by_ui_index(df_f, idx):
+                            st.success("Kayıt başarıyla silindi!"); st.rerun()
+                        else:
+                            st.error("Silme işlemi başarısız oldu. Lütfen sayfayı yenileyip tekrar deneyin.")
+                    
+                    # DÜZENLEME BUTONU
+                    if c_btn2.button("✏️ Düzenle"):
+                        st.session_state['edit_mode'] = True; st.session_state['edit_idx'] = idx
+                    
+                    # DÜZENLEME FORMU
+                    if st.session_state.get('edit_mode') and st.session_state.get('edit_idx') == idx:
+                        st.markdown("---")
+                        with st.form("edit_form"):
+                            e_tarih = st.date_input("Tarih", rec["Tarih"])
+                            e_adet = st.number_input("Adet", value=int(rec["Adet"]))
+                            e_fiyat = st.number_input("Birim Fiyat", value=int(rec["Birim_Fiyat"]), step=1000)
+                            e_not = st.text_area("Not", value=str(rec["Notlar"]))
+                            
+                            if st.form_submit_button("💾 Güncelle"):
+                                new_data = {
+                                    'Tarih': e_tarih,
+                                    'Adet': e_adet,
+                                    'Birim_Fiyat': e_fiyat,
+                                    'Notlar': e_not
+                                }
+                                if update_row_by_ui_index(df_f, idx, new_data):
+                                    del st.session_state['edit_mode']
+                                    del st.session_state['edit_idx']
+                                    st.success("Kayıt güncellendi!")
+                                    st.rerun()
+                                else:
+                                    st.error("Güncelleme başarısız.")
+                                    
+            # VERİTABANI SIFIRLAMA
+            with st.expander("🗑️ Veri Tabanı Temizliği (DİKKAT)"):
+                st.warning("Bu işlem SADECE sizin kayıtlarınızı silecektir.")
+                if st.button("TÜM KAYITLARIMI SİL"):
+                    if clear_user_data(CURRENT_USER):
+                        st.success("Tüm kayıtlarınız silindi.")
+                        st.rerun()
         else:
             st.info("Kayıt yok.")
