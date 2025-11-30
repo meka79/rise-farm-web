@@ -9,7 +9,7 @@ import time
 import plotly.express as px
 
 # --- AYARLAR ---
-st.set_page_config(page_title="Rise Farm (V50 Gold)", layout="wide", page_icon="💰")
+st.set_page_config(page_title="Rise Farm (Cloud V51)", layout="wide", page_icon="💰")
 GB_FIYATI_TL = 360.0
 BIR_GB_COIN = 100_000_000.0
 
@@ -336,12 +336,10 @@ if check_login():
                 alt_kats = [x for x in desired if x in alt_kats] + [x for x in alt_kats if x not in desired]
             sec_sub = alt_kats[0]
             if len(alt_kats) > 1: sec_sub = c2.selectbox("Bölüm", alt_kats, key="bs")
-            
             st.markdown("---")
             d1, d2 = st.columns([1,3])
             tarih = d1.date_input("Tarih", datetime.date.today(), key="bd")
             notlar = d2.text_input("Not", key="bn")
-            
             st.subheader(f"📦 {sec_sub}")
             with st.form("batch"):
                 items = ITEM_DB[sec_cat][sec_sub]
@@ -353,17 +351,18 @@ if check_login():
                     for j, (name, price) in enumerate(chunk):
                         with cols[j]:
                             inputs[name] = st.number_input(f"{name}", min_value=0, step=1, help=f"Piyasa: {format_price(price)}", key=f"q_{name}")
+                            # Anlık hesap (Görsel İçin)
+                            if inputs[name] > 0:
+                                pass # Form içinde dinamik gösterim kısıtlı
+
                 st.markdown("---")
-                if st.form_submit_button("💾 Kaydet"):
+                if st.form_submit_button("💾 Kaydet (Toplu)"):
                     count = 0
                     batch_total_coin = 0
                     batch_total_tl = 0
-                    
                     for nm, qty in inputs.items():
                         if qty > 0:
                             prc = ITEM_DB[sec_cat][sec_sub][nm]
-                            
-                            # --- ANLIK HESAP (BİLDİRİM İÇİN) ---
                             this_total = qty * prc
                             this_tl = (this_total / BIR_GB_COIN) * GB_FIYATI_TL
                             batch_total_coin += this_total
@@ -371,10 +370,9 @@ if check_login():
                             
                             save_entry_cloud(CURRENT_USER, tarih, sec_cat, sec_sub, nm, qty, prc, notlar)
                             count += 1
-                            
                     if count > 0: 
                         st.success(f"✅ {count} kalem eklendi!\n\n💰 **Toplam:** {format_price(batch_total_coin)} Coin | 🇹🇷 **{batch_total_tl:.2f} TL**")
-                        st.toast("Kayıt Başarılı!", icon="🎉")
+                        st.toast("Kaydedildi!", icon="🎉")
                     else: st.warning("Adet giriniz.")
 
         with tab_manuel:
@@ -395,10 +393,10 @@ if check_login():
                 mq = c2.number_input("Adet", min_value=1, value=1, key="mq")
                 mp = c3.text_input("Fiyat", value=format_price(def_price), key="mp")
                 mn = st.text_area("Not", key="mn")
-                if st.form_submit_button("💾 Kaydet"):
+                if st.form_submit_button("💾 Kaydet (Manuel)"):
                     real_p = parse_price(mp)
                     if fin_name:
-                        # --- ANLIK HESAP ---
+                        # Anlık Hesap
                         man_total = mq * real_p
                         man_tl = (man_total / BIR_GB_COIN) * GB_FIYATI_TL
                         
@@ -482,24 +480,23 @@ if check_login():
                 st.info(f"👑 **{act_p}** | Kalan: {max(0, rem)} gün")
             
             tot_c = df_filtered["Toplam_Deger"].sum()
-            tot_tl = df_filtered["Toplam_TL"].sum()
+            # DÜZELTME: TL'yi sütundan alma, yeniden hesapla
+            tot_tl = (tot_c / BIR_GB_COIN) * GB_FIYATI_TL
             
-            # HESAPLAMA GARANTİSİ (V50): TL'yi sütundan değil, coin'den hesapla
-            final_tot_tl = (tot_c / BIR_GB_COIN) * GB_FIYATI_TL
-
             c1, c2 = st.columns(2)
             c1.metric("💰 Kazanç", format_m(tot_c))
-            c2.metric("🇹🇷 Değer", f"{final_tot_tl:,.0f} TL")
+            # DÜZELTME: Ondalık gösterim (.2f)
+            c2.metric("🇹🇷 Değer", f"{tot_tl:,.2f} TL")
             
             st.markdown("---")
             t1, t2, t3 = st.tabs(["📅 Günlük", "📊 Özet", "🛠️ Geçmiş"])
             
             with t1:
                 col_ozet, col_detay = st.columns([1, 1.5])
-                # Günlük Özet
                 ds = df_filtered.groupby(df_filtered["Tarih"].dt.date)[["Toplam_Deger"]].sum().reset_index().sort_values("Tarih", ascending=False)
                 ds["Coin"] = ds["Toplam_Deger"].apply(lambda x: f"{x/1000000:.2f}m")
-                ds["TL"] = ds["Toplam_Deger"].apply(lambda x: f"{(x/BIR_GB_COIN)*GB_FIYATI_TL:.0f} TL")
+                # DÜZELTME: TL'yi yeniden hesapla
+                ds["TL"] = ds["Toplam_Deger"].apply(lambda x: f"{(x/BIR_GB_COIN)*GB_FIYATI_TL:.2f} TL")
                 col_ozet.dataframe(ds[["Tarih", "Coin", "TL"]], use_container_width=True, hide_index=True)
                 
                 if not ds.empty:
