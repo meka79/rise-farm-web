@@ -9,8 +9,11 @@ import time
 import plotly.express as px
 
 # --- AYARLAR ---
-st.set_page_config(page_title="Rise Farm (Cloud Final)", layout="wide", page_icon="☁️")
+st.set_page_config(page_title="Rise Farm (Cloud V41)", layout="wide", page_icon="☁️")
+
+# EKONOMİ SABİTLERİ (KESİN HESAP İÇİN)
 GB_FIYATI_TL = 360.0
+BIR_GB_COIN = 100_000_000.0  # 8 Sıfır (100 Milyon)
 
 # --- AUTH & BAĞLANTI ---
 @st.cache_resource
@@ -40,6 +43,7 @@ def init_sheets():
 
 # --- YARDIMCI FONKSİYONLAR ---
 def parse_price(value_str):
+    """ '1.5m' -> 1500000, '12k' -> 12000 çevirir """
     if isinstance(value_str, (int, float)): return int(value_str)
     s = str(value_str).lower().strip().replace(',', '.')
     multiplier = 1
@@ -94,8 +98,8 @@ def save_entry_cloud(username, tarih, kategori, alt_kategori, esya, adet, fiyat,
     
     toplam_coin = adet * fiyat
     
-    # HESAPLAMA GARANTİSİ: (Coin / 100 Milyon) * 360 TL
-    toplam_tl = (toplam_coin / 100000000.0) * GB_FIYATI_TL
+    # MATEMATİK DÜZELTME: Sabit Değişken Kullanıldı
+    toplam_tl = (toplam_coin / BIR_GB_COIN) * GB_FIYATI_TL
     
     tarih_str = tarih.strftime("%Y-%m-%d")
     row = [username, tarih_str, kategori, alt_kategori, esya, adet, fiyat, toplam_coin, toplam_tl, notlar]
@@ -317,7 +321,7 @@ if check_login():
 
     st.sidebar.info(f"1 GB = **{GB_FIYATI_TL} TL**")
 
-    # --- SAYFA: YENİ KAYIT ---
+    # --- SAYFALAR ---
     if sayfa == "📝 Yeni Kayıt Ekle":
         st.title("📝 Yeni Kayıt (Cloud)")
         tab_toplu, tab_manuel = st.tabs(["📦 Toplu Giriş", "✍️ Manuel Giriş"])
@@ -347,7 +351,6 @@ if check_login():
                     for j, (name, price) in enumerate(chunk):
                         with cols[j]:
                             inputs[name] = st.number_input(f"{name}", min_value=0, step=1, help=f"Piyasa: {format_price(price)}", key=f"q_{name}")
-                st.markdown("---")
                 if st.form_submit_button("💾 Kaydet"):
                     count = 0
                     for nm, qty in inputs.items():
@@ -377,7 +380,7 @@ if check_login():
                 mp = c3.text_input("Fiyat", value=format_price(def_price), key="mp")
                 mn = st.text_area("Not", key="mn")
                 if st.form_submit_button("💾 Kaydet"):
-                    final_fiyat = parse_price(mp)
+                    real_p = parse_price(mp)
                     if fin_name:
                         save_entry_cloud(CURRENT_USER, mt, m_cat, m_sub, fin_name, mq, real_p, mn)
                         st.success("Kaydedildi")
@@ -451,7 +454,6 @@ if check_login():
                         s = pd.to_datetime(PERIOD_DB[pn]["start"])
                         e = pd.to_datetime(PERIOD_DB[pn]["end"])
                         df_filtered = df_filtered[(df_filtered["Tarih"] >= s) & (df_filtered["Tarih"] <= e)]
-                
                 if cat_fil: df_filtered = df_filtered[df_filtered["Kategori"].isin(cat_fil)]
                 if sub_fil: df_filtered = df_filtered[df_filtered["Alt_Kategori"].isin(sub_fil)]
             
