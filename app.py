@@ -9,7 +9,7 @@ import time
 import plotly.express as px
 
 # --- AYARLAR ---
-st.set_page_config(page_title="Rise Farm (Cloud V49)", layout="wide", page_icon="☁️")
+st.set_page_config(page_title="Rise Farm (V50 Gold)", layout="wide", page_icon="💰")
 GB_FIYATI_TL = 360.0
 BIR_GB_COIN = 100_000_000.0
 
@@ -99,7 +99,6 @@ def save_entry_cloud(username, tarih, kategori, alt_kategori, esya, adet, fiyat,
     ws = sh.worksheet("Logs")
     
     toplam_coin = adet * fiyat
-    # TL Hesabı burada yapılır ama gösterim anlık hesaplanır
     toplam_tl = (toplam_coin / BIR_GB_COIN) * GB_FIYATI_TL
     
     tarih_str = tarih.strftime("%Y-%m-%d")
@@ -337,17 +336,19 @@ if check_login():
                 alt_kats = [x for x in desired if x in alt_kats] + [x for x in alt_kats if x not in desired]
             sec_sub = alt_kats[0]
             if len(alt_kats) > 1: sec_sub = c2.selectbox("Bölüm", alt_kats, key="bs")
+            
             st.markdown("---")
             d1, d2 = st.columns([1,3])
             tarih = d1.date_input("Tarih", datetime.date.today(), key="bd")
             notlar = d2.text_input("Not", key="bn")
+            
             st.subheader(f"📦 {sec_sub}")
             with st.form("batch"):
                 items = ITEM_DB[sec_cat][sec_sub]
                 inputs = {}
-                items_list = list(items.items())
-                for i in range(0, len(items_list), 3):
-                    chunk = items_list[i:i+3]
+                item_list = list(items.items())
+                for i in range(0, len(item_list), 3):
+                    chunk = item_list[i:i+3]
                     cols = st.columns(3)
                     for j, (name, price) in enumerate(chunk):
                         with cols[j]:
@@ -355,12 +356,25 @@ if check_login():
                 st.markdown("---")
                 if st.form_submit_button("💾 Kaydet"):
                     count = 0
+                    batch_total_coin = 0
+                    batch_total_tl = 0
+                    
                     for nm, qty in inputs.items():
                         if qty > 0:
                             prc = ITEM_DB[sec_cat][sec_sub][nm]
+                            
+                            # --- ANLIK HESAP (BİLDİRİM İÇİN) ---
+                            this_total = qty * prc
+                            this_tl = (this_total / BIR_GB_COIN) * GB_FIYATI_TL
+                            batch_total_coin += this_total
+                            batch_total_tl += this_tl
+                            
                             save_entry_cloud(CURRENT_USER, tarih, sec_cat, sec_sub, nm, qty, prc, notlar)
                             count += 1
-                    if count > 0: st.success(f"{count} kalem eklendi!"); st.toast("Kaydedildi!")
+                            
+                    if count > 0: 
+                        st.success(f"✅ {count} kalem eklendi!\n\n💰 **Toplam:** {format_price(batch_total_coin)} Coin | 🇹🇷 **{batch_total_tl:.2f} TL**")
+                        st.toast("Kayıt Başarılı!", icon="🎉")
                     else: st.warning("Adet giriniz.")
 
         with tab_manuel:
@@ -384,8 +398,12 @@ if check_login():
                 if st.form_submit_button("💾 Kaydet"):
                     real_p = parse_price(mp)
                     if fin_name:
+                        # --- ANLIK HESAP ---
+                        man_total = mq * real_p
+                        man_tl = (man_total / BIR_GB_COIN) * GB_FIYATI_TL
+                        
                         save_entry_cloud(CURRENT_USER, mt, m_cat, m_sub, fin_name, mq, real_p, mn)
-                        st.success("Kaydedildi")
+                        st.success(f"✅ Kaydedildi!\n\n💰 **Değer:** {format_price(man_total)} Coin | 🇹🇷 **{man_tl:.2f} TL**")
                     else: st.error("İsim girin")
 
     # --- SAYFA: PİYASA AYARLARI ---
@@ -463,37 +481,25 @@ if check_login():
                 rem = (pd.to_datetime(PERIOD_DB[act_p]["end"]).date() - datetime.date.today()).days
                 st.info(f"👑 **{act_p}** | Kalan: {max(0, rem)} gün")
             
-            # --- KPI HESABI (YENİ DÜZEN - 3 SÜTUN) ---
-            # TL'yi Coin üzerinden anlık hesaplıyoruz
             tot_c = df_filtered["Toplam_Deger"].sum()
-            tot_tl_comma = (tot_c / BIR_GB_COIN) * GB_FIYATI_TL
-            tot_tl_dot = (tot_c / BIR_GB_COIN) * GB_FIYATI_TL
+            tot_tl = df_filtered["Toplam_TL"].sum()
             
-            c1, c2, c3 = st.columns(3)
+            # HESAPLAMA GARANTİSİ (V50): TL'yi sütundan değil, coin'den hesapla
+            final_tot_tl = (tot_c / BIR_GB_COIN) * GB_FIYATI_TL
+
+            c1, c2 = st.columns(2)
             c1.metric("💰 Kazanç", format_m(tot_c))
-            
-            # TEST: Virgüllü Format
-            try:
-                tl_str_comma = f"{tot_tl_comma:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-                c2.metric("🇹🇷 Değer (Virgül)", f"{tl_str_comma} TL")
-            except:
-                c2.metric("🇹🇷 Değer (Virgül)", "Hata")
-            
-            # TEST: Noktalı Format (Standart)
-            try:
-                tl_str_dot = f"{tot_tl_dot:,.2f}"
-                c3.metric("🇺🇸 Değer (Nokta)", f"{tl_str_dot} TL")
-            except:
-                c3.metric("🇺🇸 Değer (Nokta)", "Hata")
+            c2.metric("🇹🇷 Değer", f"{final_tot_tl:,.0f} TL")
             
             st.markdown("---")
             t1, t2, t3 = st.tabs(["📅 Günlük", "📊 Özet", "🛠️ Geçmiş"])
             
             with t1:
                 col_ozet, col_detay = st.columns([1, 1.5])
+                # Günlük Özet
                 ds = df_filtered.groupby(df_filtered["Tarih"].dt.date)[["Toplam_Deger"]].sum().reset_index().sort_values("Tarih", ascending=False)
                 ds["Coin"] = ds["Toplam_Deger"].apply(lambda x: f"{x/1000000:.2f}m")
-                ds["TL"] = ds["Toplam_Deger"].apply(lambda x: f"{(x/BIR_GB_COIN)*GB_FIYATI_TL:.2f} TL")
+                ds["TL"] = ds["Toplam_Deger"].apply(lambda x: f"{(x/BIR_GB_COIN)*GB_FIYATI_TL:.0f} TL")
                 col_ozet.dataframe(ds[["Tarih", "Coin", "TL"]], use_container_width=True, hide_index=True)
                 
                 if not ds.empty:
