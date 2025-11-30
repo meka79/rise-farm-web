@@ -9,7 +9,7 @@ import time
 import plotly.express as px
 
 # --- AYARLAR ---
-st.set_page_config(page_title="Rise Farm (Cloud V40)", layout="wide", page_icon="☁️")
+st.set_page_config(page_title="Rise Farm (Cloud Final)", layout="wide", page_icon="☁️")
 GB_FIYATI_TL = 360.0
 
 # --- AUTH & BAĞLANTI ---
@@ -59,7 +59,7 @@ def format_m(deger):
     return f"{deger/1_000_000:.2f} m"
 
 # --- DATA YÖNETİMİ ---
-@st.cache_data(ttl=10)
+@st.cache_data(ttl=5)
 def get_data_cached(username):
     try:
         sh = get_google_sheet()
@@ -94,12 +94,8 @@ def save_entry_cloud(username, tarih, kategori, alt_kategori, esya, adet, fiyat,
     
     toplam_coin = adet * fiyat
     
-    # HESAPLAMA DÜZELTME (GARANTİ)
-    # 1 GB = 100.000.000 Coin = 360 TL
-    # (Coin / 100_000_000) * 360
-    
-    gb_miktari = toplam_coin / 100000000.0
-    toplam_tl = gb_miktari * GB_FIYATI_TL
+    # HESAPLAMA GARANTİSİ: (Coin / 100 Milyon) * 360 TL
+    toplam_tl = (toplam_coin / 100000000.0) * GB_FIYATI_TL
     
     tarih_str = tarih.strftime("%Y-%m-%d")
     row = [username, tarih_str, kategori, alt_kategori, esya, adet, fiyat, toplam_coin, toplam_tl, notlar]
@@ -159,7 +155,7 @@ def clear_user_data(username):
     clear_cache()
     return True
 
-# --- FİYAT YÖNETİMİ ---
+# --- FİYAT VE DÖNEM YÖNETİMİ ---
 BASE_DB = {
     "Gathering (Toplama)": {
         "Woodcutting (Odunculuk)": {"Oak Wood": 12000, "Pine Wood": 15000, "Aspen Wood": 20000, "Birch Wood": 25000, "🌟 Holywood": 1400000, "🌟 Firefly Wood": 600000, "🌟 Soulsage": 700000},
@@ -292,6 +288,11 @@ if check_login():
     
     st.sidebar.markdown("---")
     
+    # Yenile Butonu
+    if st.sidebar.button("🔄 Verileri Yenile"):
+        clear_cache()
+        st.rerun()
+    
     sh = init_sheets()
     ITEM_DB = get_prices_cloud()
     PERIOD_DB = get_periods_cloud(CURRENT_USER)
@@ -375,8 +376,8 @@ if check_login():
                 mq = c2.number_input("Adet", min_value=1, value=1, key="mq")
                 mp = c3.text_input("Fiyat", value=format_price(def_price), key="mp")
                 mn = st.text_area("Not", key="mn")
-                if st.form_submit_button("Kaydet"):
-                    real_p = parse_price(mp)
+                if st.form_submit_button("💾 Kaydet"):
+                    final_fiyat = parse_price(mp)
                     if fin_name:
                         save_entry_cloud(CURRENT_USER, mt, m_cat, m_sub, fin_name, mq, real_p, mn)
                         st.success("Kaydedildi")
@@ -450,6 +451,7 @@ if check_login():
                         s = pd.to_datetime(PERIOD_DB[pn]["start"])
                         e = pd.to_datetime(PERIOD_DB[pn]["end"])
                         df_filtered = df_filtered[(df_filtered["Tarih"] >= s) & (df_filtered["Tarih"] <= e)]
+                
                 if cat_fil: df_filtered = df_filtered[df_filtered["Kategori"].isin(cat_fil)]
                 if sub_fil: df_filtered = df_filtered[df_filtered["Alt_Kategori"].isin(sub_fil)]
             
