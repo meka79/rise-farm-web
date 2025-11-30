@@ -9,9 +9,9 @@ import time
 import plotly.express as px
 
 # --- AYARLAR ---
-st.set_page_config(page_title="Rise Farm (Cloud V43)", layout="wide", page_icon="☁️")
+st.set_page_config(page_title="Rise Farm (Cloud V45)", layout="wide", page_icon="☁️")
 GB_FIYATI_TL = 360.0
-BIR_GB_COIN = 100_000_000.0 # 100 Milyon
+BIR_GB_COIN = 100_000_000.0  # 8 SIFIR (KODUN KALBİ BURASI)
 
 # --- AUTH & BAĞLANTI ---
 @st.cache_resource
@@ -39,35 +39,15 @@ def init_sheets():
         ws.append_row(["Sahip", "Donem_Adi", "Baslangic", "Bitis"])
     return sh
 
-# --- YARDIMCI FONKSİYONLAR (GÜÇLENDİRİLMİŞ) ---
+# --- YARDIMCI FONKSİYONLAR ---
 def parse_price(value_str):
-    """ 
-    Hem 1.2m, hem 1,2m, hem 1.200,50 formatlarını anlar.
-    """
     if isinstance(value_str, (int, float)): return int(value_str)
-    
-    s = str(value_str).lower().strip()
+    s = str(value_str).lower().strip().replace(',', '.')
     multiplier = 1
-    
-    if s.endswith('k'):
-        multiplier = 1_000
-        s = s[:-1]
-    elif s.endswith('m'):
-        multiplier = 1_000_000
-        s = s[:-1]
-    
-    # Virgül/Nokta Temizliği
-    if ',' in s and '.' in s:
-        # 1.200,50 gibi karmaşık yapı
-        s = s.replace('.', '').replace(',', '.')
-    elif ',' in s:
-        # 12,5 gibi (veya 12,000 gibi ama TR standardı virgül ondalıktır)
-        s = s.replace(',', '.')
-        
-    try:
-        return int(float(s) * multiplier)
-    except:
-        return 0
+    if s.endswith('k'): multiplier = 1_000; s = s[:-1]
+    elif s.endswith('m'): multiplier = 1_000_000; s = s[:-1]
+    try: return int(float(s) * multiplier)
+    except: return 0
 
 def format_price(value):
     try: val = float(value)
@@ -77,7 +57,6 @@ def format_price(value):
     return str(int(val))
 
 def format_m(deger):
-    if pd.isna(deger): return "0 m"
     return f"{deger/1_000_000:.2f} m"
 
 # --- DATA YÖNETİMİ ---
@@ -96,18 +75,18 @@ def get_data_cached(username):
         else:
             return pd.DataFrame()
             
-        # Sayısal Düzeltme (Akıllı)
         cols = ["Adet", "Birim_Fiyat", "Toplam_Deger", "Toplam_TL"]
         for c in cols:
             if c in df.columns:
-                # Sheet'ten gelen veriyi temizle (Virgül/Nokta karmaşası için)
+                # Temizleme (Virgül/Nokta/Metin)
                 def clean_val(x):
                     try:
-                        if isinstance(x, (int, float)): return x
-                        x = str(x).replace('.', '').replace(',', '.') # Basit temizlik
+                        if isinstance(x, (int, float)): return float(x)
+                        x = str(x).replace('.', '').replace(',', '.')
+                        # TL gibi yazılar varsa temizle
+                        x = x.lower().replace('tl', '').replace('m', '').replace('k', '').strip()
                         return float(x)
                     except: return 0
-                
                 df[c] = df[c].apply(clean_val).fillna(0)
         
         if "Tarih" in df.columns:
@@ -125,12 +104,51 @@ def save_entry_cloud(username, tarih, kategori, alt_kategori, esya, adet, fiyat,
     
     toplam_coin = adet * fiyat
     
-    # KESİN HESAP: (Coin / 100.000.000) * 360
+    # KESİN HESAPLAMA (V45 FIX)
     toplam_tl = (toplam_coin / BIR_GB_COIN) * GB_FIYATI_TL
     
     tarih_str = tarih.strftime("%Y-%m-%d")
     row = [username, tarih_str, kategori, alt_kategori, esya, adet, fiyat, toplam_coin, toplam_tl, notlar]
     ws.append_row(row)
+    clear_cache()
+    return True
+
+# --- DATA ONARIM (REPAIR) FONKSİYONU ---
+def repair_user_data(username):
+    sh = get_google_sheet()
+    ws = sh.worksheet("Logs")
+    all_values = ws.get_all_values()
+    
+    if not all_values: return False
+    
+    header = all_values[0]
+    data_rows = all_values[1:]
+    
+    updated_rows = []
+    
+    for row in data_rows:
+        # row: [Sahip, Tarih, Kat, AltKat, Esya, Adet, Fiyat, Toplam, TL, Not]
+        if str(row[0]) == username:
+            try:
+                adet = float(str(row[5]).replace(',', ''))
+                fiyat = float(str(row[6]).replace(',', ''))
+                
+                # YENİDEN HESAPLA
+                yeni_toplam = adet * fiyat
+                yeni_tl = (yeni_toplam / BIR_GB_COIN) * GB_FIYATI_TL
+                
+                # Satırı güncelle
+                row[7] = yeni_toplam
+                row[8] = yeni_tl
+            except:
+                pass # Bozuk veri varsa geç
+        
+        updated_rows.append(row)
+    
+    # Tüm sayfayı silip yeniden yaz (En temizi)
+    ws.clear()
+    ws.append_row(header)
+    ws.append_rows(updated_rows)
     clear_cache()
     return True
 
@@ -146,11 +164,12 @@ def delete_row_by_ui_index(df_user, ui_index):
     row_to_del = -1
     for i, row in enumerate(all_values):
         if i == 0: continue
+        # Eşleşme
         if (len(row) > 5 and 
             str(row[0]) == str(target_row['Sahip']) and 
             str(row[1]) == target_date and
             str(row[4]) == str(target_row['Eşya']) and
-            str(row[5]) == str(target_row['Adet'])): # String karşılaştırması daha güvenli
+            str(row[5]) == str(int(target_row['Adet']))): # int çevirip karşılaştır
             row_to_del = i + 1
             break
             
@@ -555,8 +574,16 @@ if check_login():
                                     del st.session_state['edit_mode']; del st.session_state['edit_idx']
                                     st.success("Güncellendi!"); st.rerun()
                                 else: st.error("Hata.")
+                
                 with st.expander("🗑️ Veri Tabanı Temizliği"):
-                    if st.button("TÜM KAYITLARIMI SİL"):
+                    st.warning("DİKKAT: Bu işlem hatalı kayıtları topluca temizler ve yeniden hesaplar.")
+                    if st.button("🔄 TÜM VERİLERİ YENİDEN HESAPLA (ONAR)"):
+                        if repair_user_data(CURRENT_USER):
+                            st.success("Veriler onarıldı ve TL hesapları düzeltildi."); st.rerun()
+                        else:
+                            st.error("Onarım sırasında hata veya veri yok.")
+                    
+                    if st.button("TÜM KAYITLARIMI SİL (RESET)"):
                         if clear_user_data(CURRENT_USER): st.success("Temizlendi."); st.rerun()
         else:
             st.info("Kayıt yok.")
