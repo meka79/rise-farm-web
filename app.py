@@ -9,9 +9,9 @@ import time
 import plotly.express as px
 
 # --- AYARLAR ---
-st.set_page_config(page_title="Rise Farm (Cloud V48)", layout="wide", page_icon="☁️")
+st.set_page_config(page_title="Rise Farm (Cloud V49)", layout="wide", page_icon="☁️")
 GB_FIYATI_TL = 360.0
-BIR_GB_COIN = 100_000_000.0  # 8 Sıfır (100 Milyon) - Kodun Kalbi
+BIR_GB_COIN = 100_000_000.0
 
 # --- AUTH & BAĞLANTI ---
 @st.cache_resource
@@ -99,7 +99,6 @@ def save_entry_cloud(username, tarih, kategori, alt_kategori, esya, adet, fiyat,
     ws = sh.worksheet("Logs")
     
     toplam_coin = adet * fiyat
-    # FORMÜL GARANTİSİ: (Coin / 100.000.000) * 360
     toplam_tl = (toplam_coin / BIR_GB_COIN) * GB_FIYATI_TL
     
     tarih_str = tarih.strftime("%Y-%m-%d")
@@ -160,7 +159,7 @@ def clear_user_data(username):
     clear_cache()
     return True
 
-# --- FİYAT VE DÖNEM YÖNETİMİ ---
+# --- FİYAT YÖNETİMİ ---
 BASE_DB = {
     "Gathering (Toplama)": {
         "Woodcutting (Odunculuk)": {"Oak Wood": 12000, "Pine Wood": 15000, "Aspen Wood": 20000, "Birch Wood": 25000, "🌟 Holywood": 1400000, "🌟 Firefly Wood": 600000, "🌟 Soulsage": 700000},
@@ -337,51 +336,31 @@ if check_login():
                 alt_kats = [x for x in desired if x in alt_kats] + [x for x in alt_kats if x not in desired]
             sec_sub = alt_kats[0]
             if len(alt_kats) > 1: sec_sub = c2.selectbox("Bölüm", alt_kats, key="bs")
-            
             st.markdown("---")
             d1, d2 = st.columns([1,3])
             tarih = d1.date_input("Tarih", datetime.date.today(), key="bd")
             notlar = d2.text_input("Not", key="bn")
-            
             st.subheader(f"📦 {sec_sub}")
-            
-            # --- CANLI HESAPLAMA KISMI (V48) ---
-            items_dict = ITEM_DB[sec_cat][sec_sub]
-            inputs = {}
-            total_est_coin = 0
-            
-            items_list = list(items_dict.items())
-            for i in range(0, len(items_list), 3):
-                chunk = item_list[i:i+3]
-                cols = st.columns(3)
-                for j, (name, price) in enumerate(chunk):
-                    with cols[j]:
-                        inputs[name] = st.number_input(f"{name}", min_value=0, step=1, help=f"Piyasa: {format_price(price)}", key=f"q_{name}")
-                        # Anlık hesap
-                        if inputs[name] > 0:
-                            total_est_coin += inputs[name] * price
-            
-            st.markdown("---")
-            if total_est_coin > 0:
-                est_tl = (total_est_coin / BIR_GB_COIN) * GB_FIYATI_TL
-                st.info(f"💰 **Tahmini Kazanç:** {format_price(total_est_coin)} Coin | 🇹🇷 **{est_tl:.2f} TL**")
-            
-            if st.form_submit_button("💾 Kaydet (Toplu)", type="primary"): # Form dışı buton olmaz, streamlit kısıtı. Formsuz yapıya geçtim.
-                pass 
-            # DÜZELTME: Formsuz yapı daha hızlı tepki verir ama state yönetimi zor.
-            # En temiz çözüm: Form kullanıp, hesaplamayı "Kaydet"e basınca göstermek.
-            # Ama "Canlı" istendiği için, st.number_input'lar form dışında olmalı.
-            # Yukarıdaki loop zaten form dışında. Şimdi butonu koyalım.
-            
-            if st.button("💾 Kaydet (Toplu)", type="primary"):
-                count = 0
-                for nm, qty in inputs.items():
-                    if qty > 0:
-                        prc = ITEM_DB[sec_cat][sec_sub][nm]
-                        save_entry_cloud(CURRENT_USER, tarih, sec_cat, sec_sub, nm, qty, prc, notlar)
-                        count += 1
-                if count > 0: st.success(f"{count} kalem eklendi!"); st.toast("Kaydedildi!")
-                else: st.warning("Adet giriniz.")
+            with st.form("batch"):
+                items = ITEM_DB[sec_cat][sec_sub]
+                inputs = {}
+                # DÜZELTME BURADA: item_l yerine items_list kullanıldı
+                items_list = list(items.items())
+                for i in range(0, len(items_list), 3):
+                    chunk = items_list[i:i+3]
+                    cols = st.columns(3)
+                    for j, (name, price) in enumerate(chunk):
+                        with cols[j]:
+                            inputs[name] = st.number_input(f"{name}", min_value=0, step=1, help=f"Piyasa: {format_price(price)}", key=f"q_{name}")
+                if st.form_submit_button("💾 Kaydet"):
+                    count = 0
+                    for nm, qty in inputs.items():
+                        if qty > 0:
+                            prc = ITEM_DB[sec_cat][sec_sub][nm]
+                            save_entry_cloud(CURRENT_USER, tarih, sec_cat, sec_sub, nm, qty, prc, notlar)
+                            count += 1
+                    if count > 0: st.success(f"{count} kalem eklendi!"); st.toast("Kaydedildi!")
+                    else: st.warning("Adet giriniz.")
 
         with tab_manuel:
             mc1, mc2 = st.columns(2)
@@ -395,25 +374,18 @@ if check_login():
             fin_name = m_item
             if m_item == "Diğer" or m_cat == "Craft (Üretim)": fin_name = st.text_input("Adı", key="mni")
             else: def_price = ITEM_DB[m_cat][m_sub][m_item]
-            
-            # MANUEL GİRİŞ (CANLI)
-            c1, c2, c3 = st.columns(3)
-            mt = c1.date_input("Tarih", datetime.date.today(), key="md")
-            mq = c2.number_input("Adet", min_value=1, value=1, key="mq")
-            mp_str = c3.text_input("Fiyat", value=format_price(def_price), key="mp")
-            real_p = parse_price(mp_str)
-            mn = st.text_area("Not", key="mn")
-            
-            if mq > 0 and real_p > 0:
-                man_total = mq * real_p
-                man_tl = (man_total / BIR_GB_COIN) * GB_FIYATI_TL
-                st.info(f"💰 **Tahmini:** {format_price(man_total)} | {man_tl:.2f} TL")
-            
-            if st.button("💾 Kaydet (Manuel)"):
-                if fin_name:
-                    save_entry_cloud(CURRENT_USER, mt, m_cat, m_sub, fin_name, mq, real_p, mn)
-                    st.success("Kaydedildi")
-                else: st.error("İsim girin")
+            with st.form("manual"):
+                c1, c2, c3 = st.columns(3)
+                mt = c1.date_input("Tarih", datetime.date.today(), key="md")
+                mq = c2.number_input("Adet", min_value=1, value=1, key="mq")
+                mp = c3.text_input("Fiyat", value=format_price(def_price), key="mp")
+                mn = st.text_area("Not", key="mn")
+                if st.form_submit_button("💾 Kaydet"):
+                    real_p = parse_price(mp)
+                    if fin_name:
+                        save_entry_cloud(CURRENT_USER, mt, m_cat, m_sub, fin_name, mq, real_p, mn)
+                        st.success("Kaydedildi")
+                    else: st.error("İsim girin")
 
     # --- SAYFA: PİYASA AYARLARI ---
     elif sayfa == "⚙️ Piyasa Ayarları":
@@ -434,9 +406,10 @@ if check_login():
                 with st.form("prices"):
                     new_prices = {}
                     items = ITEM_DB[e_cat][e_sub]
-                    item_l = list(items.items())
-                    for i in range(0, len(item_l), 3):
-                        chunk = item_l[i:i+3]
+                    # DÜZELTME BURADA: item_l yerine items_list
+                    items_list = list(items.items())
+                    for i in range(0, len(items_list), 3):
+                        chunk = items_list[i:i+3]
                         cols = st.columns(3)
                         for j, (nm, pr) in enumerate(chunk):
                             with cols[j]:
@@ -490,11 +463,10 @@ if check_login():
                 rem = (pd.to_datetime(PERIOD_DB[act_p]["end"]).date() - datetime.date.today()).days
                 st.info(f"👑 **{act_p}** | Kalan: {max(0, rem)} gün")
             
-            # --- KPI HESABI (V48 GARANTİLİ) ---
-            # Toplam TL'yi sütundan almak yerine Coin'den hesaplıyoruz.
+            # --- KPI HESABI ---
             tot_c = df_filtered["Toplam_Deger"].sum()
-            # tot_tl = df_filtered["Toplam_TL"].sum() # ESKİ YÖNTEM (İPTAL)
-            tot_tl = (tot_c / BIR_GB_COIN) * GB_FIYATI_TL # YENİ YÖNTEM (KESİN)
+            # TL'yi Coin üzerinden kesin hesaplıyoruz
+            tot_tl = (tot_c / BIR_GB_COIN) * GB_FIYATI_TL
             
             c1, c2 = st.columns(2)
             c1.metric("💰 Kazanç", format_m(tot_c))
@@ -505,11 +477,11 @@ if check_login():
             
             with t1:
                 col_ozet, col_detay = st.columns([1, 1.5])
-                # Günlük Özet (Yeniden Hesapla)
+                # Günlük Özet
                 ds = df_filtered.groupby(df_filtered["Tarih"].dt.date)[["Toplam_Deger"]].sum().reset_index().sort_values("Tarih", ascending=False)
                 ds["Coin"] = ds["Toplam_Deger"].apply(lambda x: f"{x/1000000:.2f}m")
-                ds["TL"] = ds["Toplam_Deger"].apply(lambda x: f"{(x/BIR_GB_COIN)*GB_FIYATI_TL:.0f} TL") # Yeniden hesapla
-                
+                # TL'yi burada da yeniden hesapla
+                ds["TL"] = ds["Toplam_Deger"].apply(lambda x: f"{(x/BIR_GB_COIN)*GB_FIYATI_TL:.0f} TL")
                 col_ozet.dataframe(ds[["Tarih", "Coin", "TL"]], use_container_width=True, hide_index=True)
                 
                 if not ds.empty:
@@ -564,7 +536,13 @@ if check_login():
                                     st.success("Güncellendi!"); st.rerun()
                                 else: st.error("Hata.")
                 with st.expander("🗑️ Veri Tabanı Temizliği"):
-                    if st.button("TÜM KAYITLARIMI SİL"):
+                    st.warning("DİKKAT: Bu işlem hatalı kayıtları topluca temizler ve yeniden hesaplar.")
+                    if st.button("🔄 TÜM VERİLERİ YENİDEN HESAPLA (ONAR)"):
+                        if repair_user_data(CURRENT_USER):
+                            st.success("Veriler onarıldı ve TL hesapları düzeltildi."); st.rerun()
+                        else:
+                            st.error("Onarım sırasında hata veya veri yok.")
+                    if st.button("TÜM KAYITLARIMI SİL (RESET)"):
                         if clear_user_data(CURRENT_USER): st.success("Temizlendi."); st.rerun()
         else:
             st.info("Kayıt yok.")
