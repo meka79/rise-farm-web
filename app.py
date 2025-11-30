@@ -1,41 +1,21 @@
 import streamlit as st
 import pandas as pd
+import os
 import datetime
 from datetime import timedelta
-import gspread
-from google.oauth2.service_account import Credentials
 import json
-import time
+import streamlit.components.v1 as components
 import plotly.express as px
 
 # --- AYARLAR ---
-st.set_page_config(page_title="Rise Farm (Cloud V51)", layout="wide", page_icon="💰")
-GB_FIYATI_TL = 360.0
+st.set_page_config(page_title="Rise Farm Defteri V51", layout="wide", page_icon="💰")
+DATA_FILE = "farm_data.xlsx"
+MARKET_FILE = "market_prices.json"
+PERIODS_FILE = "premium_periods.json"
+
+# GB Fiyatı
+GB_FIYATI_TL = 360.0 
 BIR_GB_COIN = 100_000_000.0
-
-# --- AUTH & BAĞLANTI ---
-@st.cache_resource
-def get_google_sheet():
-    scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-    creds_dict = json.loads(st.secrets["gcp_service_account"]["json_content"])
-    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-    client = gspread.authorize(creds)
-    return client.open("rise_farm_db")
-
-# --- SHEET BAŞLATUCU ---
-def init_sheets():
-    sh = get_google_sheet()
-    try: sh.worksheet("Logs")
-    except: 
-        ws = sh.add_worksheet("Logs", 1000, 11)
-        ws.append_row(["Sahip", "Tarih", "Kategori", "Alt_Kategori", "Eşya", "Adet", "Birim_Fiyat", "Toplam_Deger", "Toplam_TL", "Notlar"])
-    try: sh.worksheet("Prices")
-    except: sh.add_worksheet("Prices", 1000, 3)
-    try: sh.worksheet("Periods")
-    except: 
-        ws = sh.add_worksheet("Periods", 100, 4)
-        ws.append_row(["Sahip", "Donem_Adi", "Baslangic", "Bitis"])
-    return sh
 
 # --- YARDIMCI FONKSİYONLAR ---
 def parse_price(value_str):
@@ -281,6 +261,30 @@ def check_login():
         return False
     return True
 
+# --- AUTH & BAĞLANTI ---
+@st.cache_resource
+def get_google_sheet():
+    scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+    creds_dict = json.loads(st.secrets["gcp_service_account"]["json_content"])
+    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    client = gspread.authorize(creds)
+    return client.open("rise_farm_db")
+
+# --- SHEET BAŞLATUCU ---
+def init_sheets():
+    sh = get_google_sheet()
+    try: sh.worksheet("Logs")
+    except: 
+        ws = sh.add_worksheet("Logs", 1000, 11)
+        ws.append_row(["Sahip", "Tarih", "Kategori", "Alt_Kategori", "Eşya", "Adet", "Birim_Fiyat", "Toplam_Deger", "Toplam_TL", "Notlar"])
+    try: sh.worksheet("Prices")
+    except: sh.add_worksheet("Prices", 1000, 3)
+    try: sh.worksheet("Periods")
+    except: 
+        ws = sh.add_worksheet("Periods", 100, 4)
+        ws.append_row(["Sahip", "Donem_Adi", "Baslangic", "Bitis"])
+    return sh
+
 # --- ANA UYGULAMA ---
 if check_login():
     CURRENT_USER = st.session_state["username"]
@@ -336,10 +340,12 @@ if check_login():
                 alt_kats = [x for x in desired if x in alt_kats] + [x for x in alt_kats if x not in desired]
             sec_sub = alt_kats[0]
             if len(alt_kats) > 1: sec_sub = c2.selectbox("Bölüm", alt_kats, key="bs")
+            
             st.markdown("---")
             d1, d2 = st.columns([1,3])
             tarih = d1.date_input("Tarih", datetime.date.today(), key="bd")
             notlar = d2.text_input("Not", key="bn")
+            
             st.subheader(f"📦 {sec_sub}")
             with st.form("batch"):
                 items = ITEM_DB[sec_cat][sec_sub]
@@ -351,29 +357,26 @@ if check_login():
                     for j, (name, price) in enumerate(chunk):
                         with cols[j]:
                             inputs[name] = st.number_input(f"{name}", min_value=0, step=1, help=f"Piyasa: {format_price(price)}", key=f"q_{name}")
-                            # Anlık hesap (Görsel İçin)
-                            if inputs[name] > 0:
-                                pass # Form içinde dinamik gösterim kısıtlı
-
                 st.markdown("---")
-                if st.form_submit_button("💾 Kaydet (Toplu)"):
-                    count = 0
-                    batch_total_coin = 0
-                    batch_total_tl = 0
-                    for nm, qty in inputs.items():
-                        if qty > 0:
-                            prc = ITEM_DB[sec_cat][sec_sub][nm]
-                            this_total = qty * prc
-                            this_tl = (this_total / BIR_GB_COIN) * GB_FIYATI_TL
-                            batch_total_coin += this_total
-                            batch_total_tl += this_tl
+                if st.form_submit_button("💾 Dolu Olanları Kaydet", type="primary", use_container_width=True):
+                    saved_count = 0
+                    batch_coin = 0
+                    batch_tl = 0
+                    for item, amount in inputs.items():
+                        if amount > 0:
+                            current_price = ITEM_DB[sec_cat][sec_sub][item]
+                            save_entry_cloud(CURRENT_USER, tarih, sec_cat, sec_sub, item, amount, current_price, notlar)
                             
-                            save_entry_cloud(CURRENT_USER, tarih, sec_cat, sec_sub, nm, qty, prc, notlar)
-                            count += 1
-                    if count > 0: 
-                        st.success(f"✅ {count} kalem eklendi!\n\n💰 **Toplam:** {format_price(batch_total_coin)} Coin | 🇹🇷 **{batch_total_tl:.2f} TL**")
-                        st.toast("Kaydedildi!", icon="🎉")
-                    else: st.warning("Adet giriniz.")
+                            # Anlık Toplam
+                            batch_coin += amount * current_price
+                            batch_tl += (amount * current_price / BIR_GB_COIN) * GB_FIYATI_TL
+                            
+                            saved_count += 1
+                            
+                    if saved_count > 0: 
+                        st.success(f"✅ {saved_count} kalem kaydedildi!\n\n💰 **Toplam Değer:** {format_price(batch_coin)} Coin | 🇹🇷 **{batch_tl:.2f} TL**")
+                        st.toast("Kayıt Başarılı!", icon="🎉")
+                    else: st.warning("Adet girmediniz.")
 
         with tab_manuel:
             mc1, mc2 = st.columns(2)
@@ -383,30 +386,31 @@ if check_login():
             if len(m_subs) > 1: m_sub = mc2.selectbox("Bölüm", m_subs, key="ms")
             m_items = list(ITEM_DB[m_cat][m_sub].keys()) + ["Diğer"]
             m_item = st.selectbox("Eşya", m_items, key="mi")
-            def_price = 0
+            varsayilan_fiyat = 0
             fin_name = m_item
-            if m_item == "Diğer" or m_cat == "Craft (Üretim)": fin_name = st.text_input("Adı", key="mni")
-            else: def_price = ITEM_DB[m_cat][m_sub][m_item]
+            if m_item == "Diğer" or m_cat == "Craft (Üretim)": fin_name = st.text_input("Eşya Adını Yazın:", key="man_name_input")
+            else: varsayilan_fiyat = int(ITEM_DB[m_cat][m_sub][m_item])
+            
             with st.form("manual"):
                 c1, c2, c3 = st.columns(3)
                 mt = c1.date_input("Tarih", datetime.date.today(), key="md")
                 mq = c2.number_input("Adet", min_value=1, value=1, key="mq")
-                mp = c3.text_input("Fiyat", value=format_price(def_price), key="mp")
+                m_fiyat_input = c3.text_input("Birim Fiyat", value=format_price(varsayilan_fiyat), key="man_price")
                 mn = st.text_area("Not", key="mn")
-                if st.form_submit_button("💾 Kaydet (Manuel)"):
-                    real_p = parse_price(mp)
+                if st.form_submit_button("💾 Kaydet"):
+                    final_fiyat = parse_price(m_fiyat_input)
                     if fin_name:
-                        # Anlık Hesap
-                        man_total = mq * real_p
+                        save_entry_cloud(CURRENT_USER, mt, m_cat, m_sub, fin_name, mq, final_fiyat, mn)
+                        
+                        man_total = mq * final_fiyat
                         man_tl = (man_total / BIR_GB_COIN) * GB_FIYATI_TL
                         
-                        save_entry_cloud(CURRENT_USER, mt, m_cat, m_sub, fin_name, mq, real_p, mn)
                         st.success(f"✅ Kaydedildi!\n\n💰 **Değer:** {format_price(man_total)} Coin | 🇹🇷 **{man_tl:.2f} TL**")
-                    else: st.error("İsim girin")
+                    else: st.error("Eşya adı giriniz.")
 
     # --- SAYFA: PİYASA AYARLARI ---
     elif sayfa == "⚙️ Piyasa Ayarları":
-        st.title("⚙️ Piyasa Ayarları")
+        st.title("⚙️ Piyasa Fiyatlarını Düzenle")
         with st.expander("📤 Eski Fiyat Dosyasını Yükle (market_prices.json)", expanded=False):
             uploaded_file = st.file_uploader("Dosya Seç", type="json")
             if uploaded_file:
@@ -417,123 +421,156 @@ if check_login():
         st.markdown("---")
         with st.container(border=True):
             e_cat = st.selectbox("Kategori", list(ITEM_DB.keys()))
-            if e_cat == "Craft (Üretim)": st.warning("Manuel kategori.")
+            if e_cat == "Craft (Üretim)": st.warning("Manuel giriş olduğu için sabit fiyat yoktur.")
             else:
                 e_sub = st.selectbox("Bölüm", list(ITEM_DB[e_cat].keys()))
-                with st.form("prices"):
-                    new_prices = {}
+                st.markdown(f"### 🏷️ {e_sub} Fiyatları")
+                with st.form("fiyat_duzenle"):
+                    updated_prices = {}
                     items = ITEM_DB[e_cat][e_sub]
-                    item_l = list(items.items())
-                    for i in range(0, len(item_l), 3):
-                        chunk = item_l[i:i+3]
+                    items_list = list(items.items())
+                    for i in range(0, len(items_list), 3):
+                        chunk = items_list[i:i+3]
                         cols = st.columns(3)
-                        for j, (nm, pr) in enumerate(chunk):
+                        for j, (name, price) in enumerate(chunk):
                             with cols[j]:
-                                if nm == "Treasure Token": new_prices[nm] = pr; continue
-                                new_prices[nm] = parse_price(st.text_input(nm, value=format_price(pr), key=f"p_{nm}"))
+                                if name == "Treasure Token":
+                                    updated_prices[name] = price
+                                    continue
+                                new_price_str = st.text_input(f"{name}", value=format_price(price), key=f"price_{name}")
+                                updated_prices[name] = parse_price(new_price_str)
+                    
                     if "Treasure Token" in items:
-                        new_prices["Treasure Token"] = items["Treasure Token"]
-                        st.info(f"Treasure Token: {format_price(items['Treasure Token'])}")
-                    if st.form_submit_button("Güncelle"):
-                        if "Royal Chest" in new_prices:
-                            new_prices["Treasure Token"] = int(new_prices["Royal Chest"] / 9)
-                        ITEM_DB[e_cat][e_sub] = new_prices
+                        st.markdown("---")
+                        token_p = items["Treasure Token"]
+                        st.info(f"ℹ️ Treasure Token: **{format_price(token_p)}** (Oto: Royal Chest/9)")
+                        updated_prices["Treasure Token"] = token_p
+                    
+                    st.markdown("---")
+                    if st.form_submit_button("💾 Güncelle"):
+                        if "Royal Chest" in updated_prices:
+                            updated_prices["Treasure Token"] = int(updated_prices["Royal Chest"] / 9)
+                        ITEM_DB[e_cat][e_sub] = updated_prices
                         if save_prices_cloud(ITEM_DB): st.success("Fiyatlar güncellendi!")
 
     # --- SAYFA: ANALİZ ---
     elif sayfa == "📊 Analiz & Defter":
-        st.title("📊 Analiz")
+        st.title("📊 Analiz ve Kayıt Defteri")
         df = get_data_cached(CURRENT_USER)
         
         df_filtered = pd.DataFrame()
         if not df.empty: df_filtered = df.copy()
         
         if not df.empty:
-            with st.expander("🔍 Filtrele", expanded=True):
+            with st.expander("🔍 Detaylı Filtreleme", expanded=True):
                 c1, c2, c3 = st.columns(3)
-                opts = ["Tüm Zamanlar", "Bugün", "Son 7 Gün", "Bu Ay"]
-                if PERIOD_DB: opts += [f"👑 {p}" for p in PERIOD_DB]
-                d_fil = c1.selectbox("Dönem", opts)
-                cat_fil = c2.multiselect("Kategori", df["Kategori"].unique())
-                av_sub = df["Alt_Kategori"].unique()
-                if cat_fil: av_sub = df[df["Kategori"].isin(cat_fil)]["Alt_Kategori"].unique()
-                sub_fil = c3.multiselect("Bölüm", av_sub)
+                filtre_secenekleri = ["Tüm Zamanlar", "Bugün", "Son 7 Gün", "Bu Ay"]
+                if PERIOD_DB: filtre_secenekleri += [f"👑 {d}" for d in PERIOD_DB.keys()]
+                
+                date_filter = c1.selectbox("Tarih / Dönem", filtre_secenekleri, index=0)
+                cat_filter = c2.multiselect("Kategori", df["Kategori"].unique())
+                available_subs = df["Alt_Kategori"].unique()
+                if cat_filter: available_subs = df[df["Kategori"].isin(cat_filter)]["Alt_Kategori"].unique()
+                sub_filter = c3.multiselect("Bölüm / Meslek", available_subs)
                 
                 act_p = None
-                if d_fil == "Bugün": df_filtered = df_filtered[df_filtered["Tarih"] == pd.Timestamp.today().normalize()]
-                elif d_fil == "Son 7 Gün": df_filtered = df_filtered[df_filtered["Tarih"] >= (pd.Timestamp.today() - timedelta(days=7))]
-                elif d_fil == "Bu Ay": 
-                    t = pd.Timestamp.today()
-                    df_filtered = df_filtered[(df_filtered["Tarih"].dt.month == t.month) & (df_filtered["Tarih"].dt.year == t.year)]
-                elif d_fil.startswith("👑"):
-                    pn = d_fil.replace("👑 ", "")
-                    if pn in PERIOD_DB:
-                        act_p = pn
-                        s = pd.to_datetime(PERIOD_DB[pn]["start"])
-                        e = pd.to_datetime(PERIOD_DB[pn]["end"])
+                if date_filter == "Bugün":
+                    df_filtered = df_filtered[df_filtered["Tarih"] == pd.Timestamp.today().normalize()]
+                elif date_filter == "Son 7 Gün":
+                    df_filtered = df_filtered[df_filtered["Tarih"] >= (pd.Timestamp.today() - timedelta(days=7))]
+                elif date_filter == "Bu Ay":
+                    today = pd.Timestamp.today()
+                    df_filtered = df_filtered[(df_filtered["Tarih"].dt.month == today.month) & (df_filtered["Tarih"].dt.year == today.year)]
+                elif date_filter.startswith("👑"):
+                    p_name = date_filter.replace("👑 ", "")
+                    if p_name in PERIOD_DB:
+                        act_p = p_name
+                        s = pd.to_datetime(PERIOD_DB[p_name]["start"])
+                        e = pd.to_datetime(PERIOD_DB[p_name]["end"])
                         df_filtered = df_filtered[(df_filtered["Tarih"] >= s) & (df_filtered["Tarih"] <= e)]
-                if cat_fil: df_filtered = df_filtered[df_filtered["Kategori"].isin(cat_fil)]
-                if sub_fil: df_filtered = df_filtered[df_filtered["Alt_Kategori"].isin(sub_fil)]
-            
+                
+                if cat_filter: df_filtered = df_filtered[df_filtered["Kategori"].isin(cat_filter)]
+                if sub_filter: df_filtered = df_filtered[df_filtered["Alt_Kategori"].isin(sub_filter)]
+
             if act_p:
-                rem = (pd.to_datetime(PERIOD_DB[act_p]["end"]).date() - datetime.date.today()).days
-                st.info(f"👑 **{act_p}** | Kalan: {max(0, rem)} gün")
-            
-            tot_c = df_filtered["Toplam_Deger"].sum()
-            # DÜZELTME: TL'yi sütundan alma, yeniden hesapla
-            tot_tl = (tot_c / BIR_GB_COIN) * GB_FIYATI_TL
-            
+                p_end = pd.to_datetime(PERIOD_DB[act_p]["end"]).date()
+                rem = (p_end - datetime.date.today()).days
+                st.info(f"**👑 Aktif Dönem:** {act_p} | ⏳ Kalan: {max(0, rem)} gün")
+
+            toplam_coin = df_filtered["Toplam_Deger"].sum()
+            toplam_tl = df_filtered["Toplam_TL"].sum()
             c1, c2 = st.columns(2)
-            c1.metric("💰 Kazanç", format_m(tot_c))
-            # DÜZELTME: Ondalık gösterim (.2f)
-            c2.metric("🇹🇷 Değer", f"{tot_tl:,.2f} TL")
+            c1.metric(f"💰 Kazanç ({date_filter})", format_m(toplam_coin))
+            c2.metric(f"🇹🇷 TL Değeri ({date_filter})", f"{toplam_tl:,.0f} TL")
             
             st.markdown("---")
-            t1, t2, t3 = st.tabs(["📅 Günlük", "📊 Özet", "🛠️ Geçmiş"])
             
-            with t1:
-                col_ozet, col_detay = st.columns([1, 1.5])
-                ds = df_filtered.groupby(df_filtered["Tarih"].dt.date)[["Toplam_Deger"]].sum().reset_index().sort_values("Tarih", ascending=False)
-                ds["Coin"] = ds["Toplam_Deger"].apply(lambda x: f"{x/1000000:.2f}m")
-                # DÜZELTME: TL'yi yeniden hesapla
-                ds["TL"] = ds["Toplam_Deger"].apply(lambda x: f"{(x/BIR_GB_COIN)*GB_FIYATI_TL:.2f} TL")
-                col_ozet.dataframe(ds[["Tarih", "Coin", "TL"]], use_container_width=True, hide_index=True)
+            tab_daily, tab_period, tab_edit = st.tabs(["📅 Günlük Detaylar", "📊 Dönem/Genel Özet", "🛠️ Kayıt Geçmişi & Düzenle"])
+            
+            with tab_daily:
+                col_list, col_day_detail = st.columns([1, 1.5])
+                daily_summary = df_filtered.groupby(df_filtered["Tarih"].dt.date)[["Toplam_Deger", "Toplam_TL"]].sum().reset_index()
+                daily_summary = daily_summary.sort_values("Tarih", ascending=False)
+                daily_summary["Coin_M"] = daily_summary["Toplam_Deger"].apply(lambda x: f"{x/1000000:.2f} m")
+                daily_summary["TL"] = daily_summary["Toplam_TL"].apply(lambda x: f"{x:.0f} TL")
                 
-                if not ds.empty:
-                    sel_d = col_detay.selectbox("Detay Tarihi:", ds["Tarih"], format_func=lambda x: x.strftime("%d.%m"))
-                    dd = df[df["Tarih"].dt.date == sel_d]
-                    subs = dd["Alt_Kategori"].unique()
-                    for s in subs:
-                        sd = dd[dd["Alt_Kategori"] == s]
-                        stotal = sd["Toplam_Deger"].sum()
-                        grp = sd.groupby(["Eşya", "Birim_Fiyat"]).agg({"Adet":"sum", "Toplam_Deger":"sum"}).reset_index()
-                        grp["Birim"] = grp["Birim_Fiyat"].apply(format_price)
-                        grp["Top"] = grp["Toplam_Deger"].apply(format_price)
-                        with col_detay.expander(f"{s} | {format_price(stotal)}"):
-                            st.dataframe(grp[["Eşya", "Adet", "Birim", "Top"]], use_container_width=True, hide_index=True)
+                with col_list:
+                    st.subheader("Günlük Liste")
+                    st.dataframe(daily_summary[["Tarih", "Coin_M", "TL"]], use_container_width=True, hide_index=True)
+                
+                with col_day_detail:
+                    st.subheader("🔍 Gün Detayı")
+                    if not daily_summary.empty:
+                        selected_date = st.selectbox("Tarih Seçiniz:", daily_summary["Tarih"], format_func=lambda x: x.strftime("%d.%m.%Y"))
+                        day_data = df[df["Tarih"].dt.date == selected_date]
+                        unique_subs = day_data["Alt_Kategori"].unique()
+                        
+                        if len(day_data) > 0:
+                            st.markdown(f"**{selected_date.strftime('%d.%m.%Y')} - İşlem Detayları**")
+                            for sub in unique_subs:
+                                sub_df = day_data[day_data["Alt_Kategori"] == sub]
+                                sub_total = sub_df["Toplam_Deger"].sum()
+                                sub_grouped = sub_df.groupby(["Eşya", "Birim_Fiyat"]).agg({"Adet": "sum", "Toplam_Deger": "sum"}).reset_index()
+                                sub_grouped["Birim"] = sub_grouped["Birim_Fiyat"].apply(lambda x: format_price(x))
+                                sub_grouped["Toplam"] = sub_grouped["Toplam_Deger"].apply(lambda x: format_price(x))
+                                with st.expander(f"📂 {sub} | Toplam: {format_price(sub_total)}"):
+                                    st.dataframe(sub_grouped[["Eşya", "Adet", "Birim", "Toplam"]], use_container_width=True, hide_index=True)
+                        else: st.warning("Veri yok.")
+                    else: st.info("Veri yok.")
 
-            with t2:
-                c_i, c_p = st.columns([1.5, 1])
-                if not df_filtered.empty:
-                    item_s = df_filtered.groupby(["Alt_Kategori", "Eşya"]).agg({"Adet":"sum", "Toplam_Deger":"sum"}).reset_index().sort_values("Toplam_Deger", ascending=False)
-                    item_s["Gelir"] = item_s["Toplam_Deger"].apply(format_price)
-                    c_i.dataframe(item_s[["Alt_Kategori", "Eşya", "Adet", "Gelir"]], use_container_width=True, hide_index=True)
-                    cat_s = df_filtered.groupby("Alt_Kategori")["Toplam_Deger"].sum().reset_index()
-                    cat_s["%"] = (cat_s["Toplam_Deger"] / cat_s["Toplam_Deger"].sum() * 100).map('{:.1f}%'.format)
-                    c_p.dataframe(cat_s[["Alt_Kategori", "%"]], use_container_width=True, hide_index=True)
-            
-            with t3:
+            with tab_period:
+                st.subheader(f"📊 {date_filter} - İtem Bazlı Döküm")
+                col_item, col_pie = st.columns([1.5, 1])
+                with col_item:
+                    if not df_filtered.empty:
+                        item_summary = df_filtered.groupby(["Alt_Kategori", "Eşya"]).agg({"Adet": "sum", "Toplam_Deger": "sum"}).reset_index().sort_values("Toplam_Deger", ascending=False)
+                        item_summary["Gelir"] = item_summary["Toplam_Deger"].apply(lambda x: format_price(x))
+                        st.dataframe(item_summary[["Alt_Kategori", "Eşya", "Adet", "Gelir"]], use_container_width=True, hide_index=True)
+                    else: st.warning("Bu filtrede veri yok.")
+                with col_pie:
+                    if not df_filtered.empty:
+                        st.write("**Bölüm Payı**")
+                        cat_summary = df_filtered.groupby("Alt_Kategori")["Toplam_Deger"].sum().reset_index()
+                        cat_summary["Yüzde"] = (cat_summary["Toplam_Deger"] / cat_summary["Toplam_Deger"].sum()) * 100
+                        cat_summary["Yüzde"] = cat_summary["Yüzde"].map('{:.1f}%'.format)
+                        st.dataframe(cat_summary[["Alt_Kategori", "Yüzde"]], use_container_width=True, hide_index=True)
+
+            with tab_edit:
+                st.subheader("🛠️ Kayıt Yönetimi")
                 df_show = df_filtered.sort_values("Tarih", ascending=False)
                 st.dataframe(df_show, use_container_width=True)
+                
                 col_del1, col_del2 = st.columns([3, 1])
                 with col_del1:
-                    delete_options = df_show.apply(lambda x: f"{x.name} | {x['Tarih'].strftime('%d.%m')} - {x['Eşya']} ({x['Adet']} ad.)", axis=1)
+                    delete_options = df_show.apply(lambda x: f"{x.name} | {x['Tarih'].strftime('%d.%m')} - {x['Eşya']} ({x['Adet']})", axis=1)
                     sel_rec = st.selectbox("İşlem Seç:", delete_options, index=None, placeholder="Kayıt seç...")
+                
                 if sel_rec:
                     idx = int(sel_rec.split(" | ")[0])
                     rec = df.loc[idx]
-                    b1, b2 = st.columns(2)
-                    if b1.button("🗑️ Sil", type="primary"):
+                    
+                    c_btn1, c_btn2 = st.columns(2)
+                    if c_btn1.button("🗑️ Sil", type="primary"):
                         if delete_row_by_ui_index(df_filtered, idx): st.success("Silindi!"); st.rerun()
                         else: st.error("Hata.")
                     if b2.button("✏️ Düzenle"):
@@ -550,6 +587,7 @@ if check_login():
                                     del st.session_state['edit_mode']; del st.session_state['edit_idx']
                                     st.success("Güncellendi!"); st.rerun()
                                 else: st.error("Hata.")
+                
                 with st.expander("🗑️ Veri Tabanı Temizliği"):
                     if st.button("TÜM KAYITLARIMI SİL"):
                         if clear_user_data(CURRENT_USER): st.success("Temizlendi."); st.rerun()
